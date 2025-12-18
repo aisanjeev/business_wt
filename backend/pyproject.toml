@@ -1,0 +1,59 @@
+[tool.poetry]
+name = "whatsapp-business-chat"
+version = "0.1.0"
+description = "WhatsApp Business Chat Application Backend"
+authors = ["Developer <developer@example.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.115.6"
+uvicorn = {extras = ["standard"], version = "^0.34.0"}
+sqlalchemy = "^2.0.36"
+pymysql = "^1.1.1"
+aiosqlite = "^0.20.0"
+python-dotenv = "^1.0.1"
+pydantic = "^2.10.4"
+pydantic-settings = "^2.7.0"
+httpx = "^0.28.1"
+pyjwt = "^2.10.1"
+python-multipart = "^0.0.20"
+python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+websockets = "^14.1"
+email-validator = "^2.3.0"
+
+[tool.poetry.group.dev.dependencies]
+black = "^24.10.0"
+flake8 = "^7.1.1"
+pytest = "^8.3.4"
+pytest-asyncio = "^0.25.0"
+httpx = "^0.28.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+    | \.hg
+    | \.mypy_cache
+    | \.tox
+    | \.venv
+    | _build
+    | buck-out
+    | build
+    | dist
+)/
+'''
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
