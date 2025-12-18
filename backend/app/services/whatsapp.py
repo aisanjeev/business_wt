@@ -39,12 +39,14 @@ class WhatsAppClient:
     @property
     def messages_url(self) -> str:
         """Get the messages endpoint URL."""
-        return f"{self.base_url}/{self.api_version}/{self.phone_number_id}/messages"
+        # base_url already includes api_version, so don't add it again
+        return f"{self.base_url}/{self.phone_number_id}/messages"
     
     @property
     def media_url(self) -> str:
         """Get the media endpoint URL."""
-        return f"{self.base_url}/{self.api_version}/{self.phone_number_id}/media"
+        # base_url already includes api_version, so don't add it again
+        return f"{self.base_url}/{self.phone_number_id}/media"
     
     async def _make_request(
         self,
@@ -450,7 +452,8 @@ class WhatsAppClient:
         Returns:
             Media download URL.
         """
-        url = f"{self.base_url}/{self.api_version}/{media_id}"
+        # base_url already includes api_version
+        url = f"{self.base_url}/{media_id}"
         response = await self._make_request("GET", url)
         return response.get("url", "")
     

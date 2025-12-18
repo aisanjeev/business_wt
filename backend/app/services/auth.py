@@ -34,8 +34,13 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     
     Returns:
         True if password matches, False otherwise.
+    
+    Note:
+        bcrypt has a 72-byte limit, so we truncate if necessary.
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    # bcrypt has a 72-byte password limit, truncate if necessary
+    password_bytes = plain_password.encode('utf-8')[:72]
+    return pwd_context.verify(password_bytes.decode('utf-8'), hashed_password)
 
 
 def get_password_hash(password: str) -> str:
@@ -46,8 +51,13 @@ def get_password_hash(password: str) -> str:
     
     Returns:
         The hashed password.
+    
+    Note:
+        bcrypt has a 72-byte limit, so we truncate if necessary.
     """
-    return pwd_context.hash(password)
+    # bcrypt has a 72-byte password limit, truncate if necessary
+    password_bytes = password.encode('utf-8')[:72]
+    return pwd_context.hash(password_bytes.decode('utf-8'))
 
 
 def create_access_token(
@@ -202,6 +212,43 @@ async def authenticate_user(
     await db.commit()
     
     logger.info(f"User '{username}' authenticated successfully")
+    return user
+
+
+async def authenticate_user_by_email(
+    db: AsyncSession,
+    email: str,
+    password: str,
+) -> Optional[User]:
+    """Authenticate a user by email and password.
+    
+    Args:
+        db: Database session.
+        email: The email address.
+        password: The plain text password.
+    
+    Returns:
+        User if authentication successful, None otherwise.
+    """
+    user = await get_user_by_email(db, email)
+    
+    if not user:
+        logger.warning(f"Authentication failed: User with email '{email}' not found")
+        return None
+    
+    if not verify_password(password, user.hashed_password):
+        logger.warning(f"Authentication failed: Invalid password for '{email}'")
+        return None
+    
+    if not user.is_active:
+        logger.warning(f"Authentication failed: User '{email}' is inactive")
+        return None
+    
+    # Update last login
+    user.last_login = datetime.now(timezone.utc)
+    await db.commit()
+    
+    logger.info(f"User '{email}' authenticated successfully")
     return user
 
 

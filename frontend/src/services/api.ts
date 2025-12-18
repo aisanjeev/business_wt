@@ -12,6 +12,30 @@ import {
 // API Configuration
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+/**
+ * Get the proper media URL for displaying attachments.
+ * - Local URLs (/api/media/...) get the full backend URL prepended
+ * - WhatsApp URLs (lookaside.fbsbx.com, etc.) get proxied through our backend
+ * - Other URLs are returned as-is
+ */
+export function getMediaUrl(mediaUrl: string | undefined | null): string {
+  if (!mediaUrl) return '';
+  
+  // If it's a local media path, prepend the API base URL
+  if (mediaUrl.startsWith('/api/media/')) {
+    return `${API_BASE_URL}${mediaUrl}`;
+  }
+  
+  // If it's a WhatsApp URL, proxy it through our backend
+  const whatsappDomains = ['lookaside.fbsbx.com', 'scontent.whatsapp.net', 'mmg.whatsapp.net'];
+  if (whatsappDomains.some(domain => mediaUrl.includes(domain))) {
+    return `${API_BASE_URL}/api/media/proxy?url=${encodeURIComponent(mediaUrl)}`;
+  }
+  
+  // For other URLs, return as-is (e.g., external image URLs)
+  return mediaUrl;
+}
+
 // Create axios instance with default config
 const apiClient: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -64,23 +88,13 @@ const handleApiError = (error: unknown): string => {
 
 export const conversationApi = {
   /**
-   * Get all conversations with pagination
+   * Get all conversations (list for sidebar)
    */
   async getConversations(
-    page: number = 1,
-    pageSize: number = 20,
-    isActive?: boolean
-  ): Promise<ApiResponse<PaginatedResponse<Conversation>>> {
+    limit: number = 50
+  ): Promise<ApiResponse<Conversation[]>> {
     try {
-      const params = new URLSearchParams({
-        page: page.toString(),
-        page_size: pageSize.toString(),
-      });
-      if (isActive !== undefined) {
-        params.append('is_active', isActive.toString());
-      }
-      
-      const response = await apiClient.get(`/api/conversations?${params}`);
+      const response = await apiClient.get(`/api/contacts/conversations/list?limit=${limit}`);
       return { success: true, data: response.data };
     } catch (error) {
       return { success: false, error: handleApiError(error) };
@@ -92,7 +106,7 @@ export const conversationApi = {
    */
   async getConversation(conversationId: number): Promise<ApiResponse<Conversation>> {
     try {
-      const response = await apiClient.get(`/api/conversations/${conversationId}`);
+      const response = await apiClient.get(`/api/contacts/conversations/${conversationId}`);
       return { success: true, data: response.data };
     } catch (error) {
       return { success: false, error: handleApiError(error) };
@@ -104,7 +118,7 @@ export const conversationApi = {
    */
   async createConversation(contactId: number): Promise<ApiResponse<Conversation>> {
     try {
-      const response = await apiClient.post('/api/conversations', { contact_id: contactId });
+      const response = await apiClient.post('/api/contacts', { contact_id: contactId });
       return { success: true, data: response.data };
     } catch (error) {
       return { success: false, error: handleApiError(error) };
@@ -119,7 +133,7 @@ export const conversationApi = {
     data: Partial<Conversation>
   ): Promise<ApiResponse<Conversation>> {
     try {
-      const response = await apiClient.patch(`/api/conversations/${conversationId}`, data);
+      const response = await apiClient.patch(`/api/contacts/conversations/${conversationId}`, data);
       return { success: true, data: response.data };
     } catch (error) {
       return { success: false, error: handleApiError(error) };
@@ -142,13 +156,12 @@ export const messageApi = {
   ): Promise<ApiResponse<PaginatedResponse<Message>>> {
     try {
       const params = new URLSearchParams({
+        conversation_id: conversationId.toString(),
         page: page.toString(),
         page_size: pageSize.toString(),
       });
       
-      const response = await apiClient.get(
-        `/api/conversations/${conversationId}/messages?${params}`
-      );
+      const response = await apiClient.get(`/api/messages?${params}`);
       return { success: true, data: response.data };
     } catch (error) {
       return { success: false, error: handleApiError(error) };
@@ -160,7 +173,7 @@ export const messageApi = {
    */
   async sendMessage(data: SendMessageRequest): Promise<ApiResponse<Message>> {
     try {
-      const response = await apiClient.post('/api/messages', data);
+      const response = await apiClient.post('/api/messages/send', data);
       return { success: true, data: response.data };
     } catch (error) {
       return { success: false, error: handleApiError(error) };
@@ -325,10 +338,21 @@ export const authApi = {
   async login(email: string, password: string): Promise<ApiResponse<{ token: string; user: unknown }>> {
     try {
       const response = await apiClient.post('/api/auth/login', { email, password });
-      if (response.data.token && typeof window !== 'undefined') {
-        localStorage.setItem('auth_token', response.data.token);
+      const token = response.data.access_token || response.data.token;
+      if (token && typeof window !== 'undefined') {
+        localStorage.setItem('auth_token', token);
       }
-      return { success: true, data: response.data };
+      // Fetch user profile after successful login
+      const profileResponse = await apiClient.get('/api/auth/me', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      return { 
+        success: true, 
+        data: { 
+          token, 
+          user: profileResponse.data 
+        } 
+      };
     } catch (error) {
       return { success: false, error: handleApiError(error) };
     }

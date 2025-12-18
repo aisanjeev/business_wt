@@ -292,42 +292,88 @@ class MessageProcessor:
         elif message.type == MessageType.IMAGE.value and message.image:
             media_mime_type = message.image.mime_type
             content = message.image.caption
-            # Get media URL from WhatsApp
+            # Get media URL from WhatsApp and download it
             try:
-                media_url = await whatsapp_client.get_media_url(message.image.id)
+                whatsapp_url = await whatsapp_client.get_media_url(message.image.id)
+                if whatsapp_url:
+                    from app.services.media import download_and_store_media
+                    from app.config import settings
+                    local_url, _ = await download_and_store_media(
+                        whatsapp_url, 
+                        media_mime_type or "image/jpeg",
+                        settings.whatsapp_api_token
+                    )
+                    media_url = local_url
             except Exception as e:
-                logger.error(f"Failed to get image URL: {e}")
+                logger.error(f"Failed to get/download image: {e}")
         
         elif message.type == MessageType.DOCUMENT.value and message.document:
             media_mime_type = message.document.mime_type
             media_filename = message.document.filename
             content = message.document.caption
             try:
-                media_url = await whatsapp_client.get_media_url(message.document.id)
+                whatsapp_url = await whatsapp_client.get_media_url(message.document.id)
+                if whatsapp_url:
+                    from app.services.media import download_and_store_media
+                    from app.config import settings
+                    local_url, _ = await download_and_store_media(
+                        whatsapp_url,
+                        media_mime_type or "application/octet-stream",
+                        settings.whatsapp_api_token,
+                        media_filename
+                    )
+                    media_url = local_url
             except Exception as e:
-                logger.error(f"Failed to get document URL: {e}")
+                logger.error(f"Failed to get/download document: {e}")
         
         elif message.type == MessageType.AUDIO.value and message.audio:
             media_mime_type = message.audio.mime_type
             try:
-                media_url = await whatsapp_client.get_media_url(message.audio.id)
+                whatsapp_url = await whatsapp_client.get_media_url(message.audio.id)
+                if whatsapp_url:
+                    from app.services.media import download_and_store_media
+                    from app.config import settings
+                    local_url, _ = await download_and_store_media(
+                        whatsapp_url,
+                        media_mime_type or "audio/ogg",
+                        settings.whatsapp_api_token
+                    )
+                    media_url = local_url
             except Exception as e:
-                logger.error(f"Failed to get audio URL: {e}")
+                logger.error(f"Failed to get/download audio: {e}")
         
         elif message.type == MessageType.VIDEO.value and message.video:
             media_mime_type = message.video.mime_type
             content = message.video.caption
             try:
-                media_url = await whatsapp_client.get_media_url(message.video.id)
+                whatsapp_url = await whatsapp_client.get_media_url(message.video.id)
+                if whatsapp_url:
+                    from app.services.media import download_and_store_media
+                    from app.config import settings
+                    local_url, _ = await download_and_store_media(
+                        whatsapp_url,
+                        media_mime_type or "video/mp4",
+                        settings.whatsapp_api_token
+                    )
+                    media_url = local_url
             except Exception as e:
-                logger.error(f"Failed to get video URL: {e}")
+                logger.error(f"Failed to get/download video: {e}")
         
         elif message.type == MessageType.STICKER.value and message.sticker:
             media_mime_type = message.sticker.mime_type
             try:
-                media_url = await whatsapp_client.get_media_url(message.sticker.id)
+                whatsapp_url = await whatsapp_client.get_media_url(message.sticker.id)
+                if whatsapp_url:
+                    from app.services.media import download_and_store_media
+                    from app.config import settings
+                    local_url, _ = await download_and_store_media(
+                        whatsapp_url,
+                        media_mime_type or "image/webp",
+                        settings.whatsapp_api_token
+                    )
+                    media_url = local_url
             except Exception as e:
-                logger.error(f"Failed to get sticker URL: {e}")
+                logger.error(f"Failed to get/download sticker: {e}")
         
         return content, media_url, media_mime_type, media_filename
     
@@ -367,10 +413,20 @@ class MessageProcessor:
             conversation_id=conversation_id,
         )
         
+        event_json = event.model_dump_json()
+        
+        logger.info(f"Broadcasting new message to conversation {conversation_id} and global")
+        
+        # Broadcast to conversation-specific connections
         await self.ws_manager.broadcast_to_conversation(
             conversation_id,
-            event.model_dump_json(),
+            event_json,
         )
+        
+        # Also broadcast to global connections (for notification/list updates)
+        await self.ws_manager.broadcast_global(event_json)
+        
+        logger.info("Broadcast complete")
     
     async def _broadcast_status_update(
         self,

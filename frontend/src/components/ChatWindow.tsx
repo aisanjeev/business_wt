@@ -2,9 +2,9 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Image from 'next/image';
-import { useConversationStore, useMessageStore, useUIStore } from '@/hooks/useAppState';
+import { useConversationStore, useMessageStore, useUIStore, useAuthStore } from '@/hooks/useAppState';
 import { useWebSocket } from '@/hooks/useWebSocket';
-import { messageApi } from '@/services/api';
+import { messageApi, getMediaUrl } from '@/services/api';
 import { Message, MessageStatus } from '@/types';
 import { formatMessageTime, getInitials, stringToColor } from '@/utils/formatters';
 
@@ -92,12 +92,12 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, showAvatar, cont
           {message.message_type === 'image' && message.media_url && (
             <div>
               <Image 
-                src={message.media_url} 
+                src={getMediaUrl(message.media_url)} 
                 alt="Image" 
                 width={300}
                 height={200}
                 className="max-w-full rounded-lg cursor-pointer hover:opacity-90"
-                onClick={() => window.open(message.media_url, '_blank')}
+                onClick={() => window.open(getMediaUrl(message.media_url), '_blank')}
                 unoptimized
               />
               {message.content && (
@@ -109,7 +109,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, showAvatar, cont
           {/* Document message */}
           {message.message_type === 'document' && message.media_url && (
             <a 
-              href={message.media_url} 
+              href={getMediaUrl(message.media_url)} 
               target="_blank" 
               rel="noopener noreferrer"
               className="flex items-center gap-2 text-current hover:underline"
@@ -117,16 +117,33 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, showAvatar, cont
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
-              <span>{message.content || 'Document'}</span>
+              <span>{message.media_filename || message.content || 'Document'}</span>
             </a>
           )}
           
           {/* Audio message */}
           {message.message_type === 'audio' && message.media_url && (
             <audio controls className="max-w-full">
-              <source src={message.media_url} type="audio/mpeg" />
+              <source src={getMediaUrl(message.media_url)} type={message.media_mime_type || "audio/mpeg"} />
               Your browser does not support the audio element.
             </audio>
+          )}
+          
+          {/* Video message */}
+          {message.message_type === 'video' && message.media_url && (
+            <div>
+              <video 
+                controls 
+                className="max-w-full rounded-lg"
+                style={{ maxWidth: '300px' }}
+              >
+                <source src={getMediaUrl(message.media_url)} type={message.media_mime_type || "video/mp4"} />
+                Your browser does not support the video element.
+              </video>
+              {message.content && (
+                <p className="mt-2 whitespace-pre-wrap break-words">{message.content}</p>
+              )}
+            </div>
           )}
         </div>
         
@@ -172,11 +189,14 @@ const ChatWindow: React.FC = () => {
   
   // Store hooks
   const { selectedConversationId, conversations } = useConversationStore();
-  const { messages, setMessages, addMessage, isLoading, setLoading, isSending, setSending, drafts, setDraft, clearDraft } = useMessageStore();
+  const { messages, setMessages, addMessage, replaceMessage, updateMessage, isLoading, setLoading, isSending, setSending, drafts, setDraft, clearDraft } = useMessageStore();
   const { typingIndicators, setTyping, clearTyping, isConnected } = useUIStore();
+  const { token } = useAuthStore();
+  
+  const isDemoMode = token?.startsWith('demo-token-');
   
   // Get selected conversation and its messages
-  const selectedConversation = conversations.find(c => c.id === selectedConversationId);
+  const selectedConversation = (conversations || []).find(c => c.id === selectedConversationId);
   const conversationMessages = selectedConversationId ? (messages[selectedConversationId] || []) : [];
   const isTyping = selectedConversationId ? typingIndicators[selectedConversationId] : false;
   
@@ -205,6 +225,12 @@ const ChatWindow: React.FC = () => {
   const loadMessages = useCallback(async () => {
     if (!selectedConversationId) return;
     
+    // In demo mode, messages are already loaded by Dashboard
+    if (isDemoMode) {
+      setLoading(selectedConversationId, false);
+      return;
+    }
+    
     setLoading(selectedConversationId, true);
     try {
       const response = await messageApi.getMessages(selectedConversationId);
@@ -225,11 +251,11 @@ const ChatWindow: React.FC = () => {
     } finally {
       setLoading(selectedConversationId, false);
     }
-  }, [selectedConversationId, setLoading, setMessages, markAsRead]);
+  }, [selectedConversationId, setLoading, setMessages, markAsRead, isDemoMode]);
 
   // Load messages when conversation changes
   useEffect(() => {
-    if (selectedConversationId && !messages[selectedConversationId]) {
+    if (selectedConversationId && !isDemoMode && !messages[selectedConversationId]) {
       loadMessages();
     }
     
@@ -332,6 +358,30 @@ const ChatWindow: React.FC = () => {
     
     addMessage(selectedConversationId, optimisticMessage);
     
+    // In demo mode, simulate sending
+    if (isDemoMode) {
+      setTimeout(() => {
+        const updatedMessages = (messages[selectedConversationId] || []).map(m =>
+          m.message_id === optimisticMessage.message_id 
+            ? { ...m, status: 'delivered' as MessageStatus } 
+            : m
+        );
+        setMessages(selectedConversationId, updatedMessages);
+        setSending(false);
+        
+        // Simulate "read" status after a short delay
+        setTimeout(() => {
+          const readMessages = (messages[selectedConversationId] || []).map(m =>
+            m.message_id === optimisticMessage.message_id 
+              ? { ...m, status: 'read' as MessageStatus } 
+              : m
+          );
+          setMessages(selectedConversationId, readMessages);
+        }, 1500);
+      }, 500);
+      return;
+    }
+    
     try {
       const response = await messageApi.sendMessage({
         conversation_id: selectedConversationId,
@@ -340,19 +390,25 @@ const ChatWindow: React.FC = () => {
       });
       
       if (response.success && response.data) {
-        // Update the optimistic message with real data
-        const updatedMessages = (messages[selectedConversationId] || []).map(m =>
-          m.message_id === optimisticMessage.message_id ? response.data! : m
+        // Replace the optimistic message with real data from server
+        // Use store function that accesses current state
+        replaceMessage(
+          selectedConversationId,
+          optimisticMessage.message_id,
+          { ...response.data, status: response.data.status || 'sent' }
         );
-        setMessages(selectedConversationId, updatedMessages);
+      } else {
+        // Mark message as failed if API call failed
+        updateMessage(selectedConversationId, optimisticMessage.message_id, { 
+          status: 'failed' as MessageStatus 
+        });
       }
     } catch (error) {
       console.error('Failed to send message:', error);
       // Mark message as failed
-      const updatedMessages = (messages[selectedConversationId] || []).map(m =>
-        m.message_id === optimisticMessage.message_id ? { ...m, status: 'failed' as MessageStatus } : m
-      );
-      setMessages(selectedConversationId, updatedMessages);
+      updateMessage(selectedConversationId, optimisticMessage.message_id, { 
+        status: 'failed' as MessageStatus 
+      });
     } finally {
       setSending(false);
     }

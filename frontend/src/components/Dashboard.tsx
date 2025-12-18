@@ -5,12 +5,15 @@ import ConversationList from './ConversationList';
 import ChatWindow from './ChatWindow';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useUIStore, useConversationStore, useMessageStore, useAuthStore } from '@/hooks/useAppState';
+import { conversationApi } from '@/services/api';
 import { Message, StatusUpdate } from '@/types';
+import { mockConversations, mockMessages, mockUnreadCounts } from '@/utils/mockData';
 
 // Header component with user profile and settings
 const DashboardHeader: React.FC = () => {
   const { isConnected, connectionError } = useUIStore();
-  const { user, logout } = useAuthStore();
+  const { user, logout, token } = useAuthStore();
+  const isDemoMode = token?.startsWith('demo-token-');
 
   return (
     <header className="h-14 bg-green-600 text-white flex items-center justify-between px-4 shadow-sm">
@@ -22,15 +25,20 @@ const DashboardHeader: React.FC = () => {
           </svg>
         </div>
         <span className="font-semibold text-lg">WhatsApp Business</span>
+        {isDemoMode && (
+          <span className="px-2 py-0.5 bg-yellow-400 text-yellow-900 text-xs font-medium rounded-full">
+            Demo Mode
+          </span>
+        )}
       </div>
 
       {/* Connection status and user menu */}
       <div className="flex items-center gap-4">
         {/* Connection indicator */}
         <div className="flex items-center gap-2 px-3 py-1 bg-green-700/50 rounded-full">
-          <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-300' : 'bg-red-400'}`} />
+          <span className={`w-2 h-2 rounded-full ${isDemoMode ? 'bg-yellow-300' : isConnected ? 'bg-green-300' : 'bg-red-400'}`} />
           <span className="text-sm">
-            {connectionError ? 'Error' : isConnected ? 'Connected' : 'Connecting...'}
+            {isDemoMode ? 'Demo Mode' : connectionError ? 'Error' : isConnected ? 'Connected' : 'Connecting...'}
           </span>
         </div>
 
@@ -66,8 +74,11 @@ const DashboardHeader: React.FC = () => {
 // Connection error banner
 const ConnectionBanner: React.FC = () => {
   const { connectionError, isConnected } = useUIStore();
+  const { token } = useAuthStore();
+  const isDemoMode = token?.startsWith('demo-token-');
   
-  if (isConnected || !connectionError) return null;
+  // Don't show error banner in demo mode
+  if (isDemoMode || isConnected || !connectionError) return null;
   
   return (
     <div className="bg-red-500 text-white px-4 py-2 flex items-center justify-between">
@@ -89,21 +100,70 @@ const ConnectionBanner: React.FC = () => {
 
 // Main Dashboard component
 const Dashboard: React.FC = () => {
-  const { setConnected, setConnectionError, incrementUnread, setTyping, clearTyping } = useUIStore();
-  const { updateConversation, selectedConversationId } = useConversationStore();
-  const { addMessage, updateMessageStatus } = useMessageStore();
+  const { setConnected, setConnectionError, incrementUnread, setTyping, clearTyping, setUnreadCount } = useUIStore();
+  const { updateConversation, addOrUpdateConversation, selectedConversationId, setConversations, conversations } = useConversationStore();
+  const { addMessage, updateMessageStatus, setMessages } = useMessageStore();
+  const { token } = useAuthStore();
+  
+  // Memoize isDemoMode to prevent re-renders from triggering WebSocket reconnections
+  const isDemoMode = React.useMemo(() => token?.startsWith('demo-token-') ?? false, [token]);
+  
+  // Function to refresh conversation list (for new conversations)
+  const refreshConversations = React.useCallback(async () => {
+    try {
+      const response = await conversationApi.getConversations();
+      if (response.success && response.data) {
+        const convList = Array.isArray(response.data) ? response.data : [];
+        setConversations(convList);
+      }
+    } catch (err) {
+      console.error('Failed to refresh conversations:', err);
+    }
+  }, [setConversations]);
 
-  // Global WebSocket connection for receiving messages
+  // Load mock data in demo mode
+  useEffect(() => {
+    if (isDemoMode) {
+      // Load mock conversations
+      setConversations(mockConversations);
+      
+      // Load mock messages for each conversation
+      Object.entries(mockMessages).forEach(([convId, msgs]) => {
+        setMessages(parseInt(convId), msgs);
+      });
+      
+      // Set mock unread counts
+      Object.entries(mockUnreadCounts).forEach(([convId, count]) => {
+        setUnreadCount(parseInt(convId), count);
+      });
+      
+      // Set connected state for demo
+      setConnected(true);
+    }
+  }, [isDemoMode, setConversations, setMessages, setUnreadCount, setConnected]);
+
+  // Global WebSocket connection for receiving messages (only when not in demo mode)
   const { isConnected, error } = useWebSocket({
     onMessage: (message: Message) => {
+      console.log('WebSocket: Received message', message);
+      
       // Add message to the store
       addMessage(message.conversation_id, message);
       
-      // Update conversation's last message
-      updateConversation(message.conversation_id, {
-        last_message: message.content,
-        last_message_at: message.timestamp || message.created_at,
-      });
+      // Check if conversation exists
+      const conversationExists = conversations?.some(c => c.id === message.conversation_id);
+      
+      if (conversationExists) {
+        // Update existing conversation's last message
+        updateConversation(message.conversation_id, {
+          last_message: message.content,
+          last_message_at: message.timestamp || message.created_at,
+        });
+      } else {
+        // New conversation - refresh the list to get it
+        console.log('WebSocket: New conversation detected, refreshing list');
+        refreshConversations();
+      }
       
       // Increment unread count if not the selected conversation
       if (message.sender_type === 'inbound' && message.conversation_id !== selectedConversationId) {
@@ -129,16 +189,18 @@ const Dashboard: React.FC = () => {
     onDisconnect: () => {
       setConnected(false);
     },
-    enabled: true,
+    enabled: !isDemoMode, // Disable WebSocket in demo mode
   });
 
-  // Update connection state
+  // Update connection state (only when not in demo mode)
   useEffect(() => {
-    setConnected(isConnected);
-    if (error) {
-      setConnectionError(error);
+    if (!isDemoMode) {
+      setConnected(isConnected);
+      if (error) {
+        setConnectionError(error);
+      }
     }
-  }, [isConnected, error, setConnected, setConnectionError]);
+  }, [isConnected, error, setConnected, setConnectionError, isDemoMode]);
 
   return (
     <div className="h-screen flex flex-col bg-gray-100">

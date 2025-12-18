@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import Image from 'next/image';
-import { useConversationStore, useUIStore } from '@/hooks/useAppState';
+import { useConversationStore, useUIStore, useAuthStore } from '@/hooks/useAppState';
 import { conversationApi } from '@/services/api';
 import { Conversation } from '@/types';
 import { formatConversationTime, truncateText, getInitials, stringToColor, formatPhoneNumber } from '@/utils/formatters';
@@ -20,8 +20,10 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   unreadCount,
   onClick,
 }) => {
-  const contactName = conversation.contact?.name || 'Unknown Contact';
-  const contactPhone = conversation.contact?.phone_number || '';
+  // Handle both nested contact object and flat contact_name/contact_phone fields
+  const contactName = conversation.contact_name || conversation.contact?.name || 'Unknown Contact';
+  const contactPhone = conversation.contact_phone || conversation.contact?.phone_number || '';
+  const contactAvatar = conversation.contact_avatar || conversation.contact?.avatar_url;
   const lastMessage = conversation.last_message || 'No messages yet';
   const lastMessageTime = conversation.last_message_at;
 
@@ -40,9 +42,9 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
           className="w-12 h-12 rounded-full flex items-center justify-center text-white font-medium"
           style={{ backgroundColor: stringToColor(contactName) }}
         >
-          {conversation.contact?.avatar_url ? (
+          {contactAvatar ? (
             <Image 
-              src={conversation.contact.avatar_url} 
+              src={contactAvatar} 
               alt={contactName}
               width={48}
               height={48}
@@ -187,15 +189,26 @@ const ConversationList: React.FC = () => {
   } = useConversationStore();
   
   const { unreadCounts, clearUnread } = useUIStore();
+  const { token } = useAuthStore();
+  
+  const isDemoMode = token?.startsWith('demo-token-');
 
   const loadConversations = useCallback(async () => {
+    // Skip API call in demo mode - data is loaded by Dashboard
+    if (isDemoMode) {
+      setLoading(false);
+      return;
+    }
+    
     setLoading(true);
     setError(null);
     
     try {
       const response = await conversationApi.getConversations();
       if (response.success && response.data) {
-        setConversations(response.data.items);
+        // API returns a direct list, not paginated
+        const conversations = Array.isArray(response.data) ? response.data : (response.data as { items?: Conversation[] }).items || [];
+        setConversations(conversations);
       } else {
         setError(response.error || 'Failed to load conversations');
       }
@@ -205,7 +218,7 @@ const ConversationList: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [setLoading, setError, setConversations]);
+  }, [isDemoMode, setLoading, setError, setConversations]);
 
   // Load conversations on mount
   useEffect(() => {
@@ -219,7 +232,7 @@ const ConversationList: React.FC = () => {
   };
 
   // Filter and search conversations
-  const filteredConversations = conversations.filter((conv) => {
+  const filteredConversations = (conversations || []).filter((conv) => {
     // Search filter
     if (searchQuery) {
       const query = searchQuery.toLowerCase();

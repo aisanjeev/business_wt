@@ -79,6 +79,7 @@ interface ConversationStore {
   // Actions
   setConversations: (conversations: Conversation[]) => void;
   addConversation: (conversation: Conversation) => void;
+  addOrUpdateConversation: (conversation: Conversation) => void;
   updateConversation: (id: number, updates: Partial<Conversation>) => void;
   removeConversation: (id: number) => void;
   selectConversation: (id: number | null) => void;
@@ -101,6 +102,24 @@ export const useConversationStore = create<ConversationStore>((set, get) => ({
     set((state) => ({
       conversations: [conversation, ...state.conversations],
     })),
+  
+  addOrUpdateConversation: (conversation) =>
+    set((state) => {
+      const exists = state.conversations.some((c) => c.id === conversation.id);
+      if (exists) {
+        // Update existing conversation
+        return {
+          conversations: state.conversations.map((conv) =>
+            conv.id === conversation.id ? { ...conv, ...conversation } : conv
+          ),
+        };
+      } else {
+        // Add new conversation at the top
+        return {
+          conversations: [conversation, ...state.conversations],
+        };
+      }
+    }),
   
   updateConversation: (id, updates) =>
     set((state) => ({
@@ -146,6 +165,7 @@ interface MessageStore {
   setMessages: (conversationId: number, messages: Message[]) => void;
   addMessage: (conversationId: number, message: Message) => void;
   updateMessage: (conversationId: number, messageId: string, updates: Partial<Message>) => void;
+  replaceMessage: (conversationId: number, oldMessageId: string, newMessage: Message) => void;
   updateMessageStatus: (messageId: string, status: MessageStatus) => void;
   prependMessages: (conversationId: number, messages: Message[]) => void;
   clearMessages: (conversationId: number) => void;
@@ -196,6 +216,16 @@ export const useMessageStore = create<MessageStore>((set, get) => ({
         ...state.messages,
         [conversationId]: (state.messages[conversationId] || []).map((msg) =>
           msg.message_id === messageId ? { ...msg, ...updates } : msg
+        ),
+      },
+    })),
+  
+  replaceMessage: (conversationId, oldMessageId, newMessage) =>
+    set((state) => ({
+      messages: {
+        ...state.messages,
+        [conversationId]: (state.messages[conversationId] || []).map((msg) =>
+          msg.message_id === oldMessageId ? newMessage : msg
         ),
       },
     })),

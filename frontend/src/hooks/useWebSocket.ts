@@ -41,6 +41,22 @@ export function useWebSocket({
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
   
+  // Store callbacks in refs to avoid re-renders triggering reconnections
+  const onConnectRef = useRef(onConnect);
+  const onDisconnectRef = useRef(onDisconnect);
+  const onMessageRef = useRef(onMessage);
+  const onStatusUpdateRef = useRef(onStatusUpdate);
+  const onTypingRef = useRef(onTyping);
+  
+  // Update refs when callbacks change
+  useEffect(() => {
+    onConnectRef.current = onConnect;
+    onDisconnectRef.current = onDisconnect;
+    onMessageRef.current = onMessage;
+    onStatusUpdateRef.current = onStatusUpdate;
+    onTypingRef.current = onTyping;
+  }, [onConnect, onDisconnect, onMessage, onStatusUpdate, onTyping]);
+  
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,9 +71,10 @@ export function useWebSocket({
   // Build WebSocket URL with token and conversation ID
   const buildWsUrl = useCallback((): string => {
     const token = getToken();
+    // Use /ws/global for global notifications, /ws/chat/{id} for specific conversation
     const baseUrl = conversationId 
       ? `${WS_BASE_URL}/ws/chat/${conversationId}`
-      : `${WS_BASE_URL}/ws/chat`;
+      : `${WS_BASE_URL}/ws/global`;
     
     if (token) {
       return `${baseUrl}?token=${token}`;
@@ -72,21 +89,27 @@ export function useWebSocket({
       
       switch (data.type) {
         case 'message':
-          if (onMessage && data.payload) {
-            onMessage(data.payload as Message);
+        case 'new_message':
+          // Handle both 'message' and 'new_message' types
+          // Backend sends 'new_message', extract the message from payload or data.message
+          const messageData = data.payload || (data as unknown as { message: Message }).message;
+          if (onMessageRef.current && messageData) {
+            onMessageRef.current(messageData as Message);
           }
           break;
           
         case 'status_update':
-          if (onStatusUpdate && data.payload) {
-            onStatusUpdate(data.payload as StatusUpdate);
+          if (onStatusUpdateRef.current && data.payload) {
+            onStatusUpdateRef.current(data.payload as StatusUpdate);
           }
           break;
           
         case 'typing':
-          if (onTyping && data.conversation_id !== undefined) {
-            const payload = data.payload as { is_typing: boolean };
-            onTyping(data.conversation_id, payload.is_typing);
+          if (onTypingRef.current && data.conversation_id !== undefined && data.payload) {
+            const payload = data.payload as { is_typing?: boolean };
+            if (typeof payload.is_typing === 'boolean') {
+              onTypingRef.current(data.conversation_id, payload.is_typing);
+            }
           }
           break;
           
@@ -100,7 +123,7 @@ export function useWebSocket({
     } catch (err) {
       console.error('WebSocket: Error parsing message', err);
     }
-  }, [onMessage, onStatusUpdate, onTyping]);
+  }, []);
 
   // Schedule reconnection with exponential backoff
   const scheduleReconnect = useCallback((connectFn: () => void) => {
@@ -145,21 +168,25 @@ export function useWebSocket({
         setIsConnected(true);
         setError(null);
         reconnectAttemptsRef.current = 0;
-        onConnect?.();
+        onConnectRef.current?.();
       };
 
       ws.onmessage = handleMessage;
 
-      ws.onerror = (event) => {
-        console.error('WebSocket: Error', event);
-        setError('WebSocket connection error');
+      ws.onerror = () => {
+        // WebSocket errors often have no useful info - the close event usually has more details
+        // Only log if we're not already disconnected
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          console.warn('WebSocket: Connection error');
+          setError('WebSocket connection error');
+        }
       };
 
       ws.onclose = (event) => {
         console.log('WebSocket: Connection closed', event.code, event.reason);
         setIsConnected(false);
         wsRef.current = null;
-        onDisconnect?.();
+        onDisconnectRef.current?.();
 
         // Attempt to reconnect if not a normal close
         if (event.code !== 1000 && enabled) {
@@ -170,7 +197,7 @@ export function useWebSocket({
       console.error('WebSocket: Failed to create connection', err);
       setError('Failed to create WebSocket connection');
     }
-  }, [enabled, buildWsUrl, getToken, handleMessage, onConnect, onDisconnect, scheduleReconnect]);
+  }, [enabled, buildWsUrl, getToken, handleMessage, scheduleReconnect]);
 
   // Send message through WebSocket
   const sendMessage = useCallback((data: WebSocketMessage) => {
@@ -220,26 +247,59 @@ export function useWebSocket({
     setIsConnected(false);
   }, []);
 
+  // Track connection state
+  const initialConnectRef = useRef(false);
+  const prevConversationIdRef = useRef<number | undefined>(conversationId);
+  const mountedRef = useRef(true);
+  const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   // Connect on mount, disconnect on unmount
   useEffect(() => {
-    connect();
+    mountedRef.current = true;
+    
+    if (!initialConnectRef.current && enabled) {
+      // Delay initial connection to allow React to settle
+      connectionTimeoutRef.current = setTimeout(() => {
+        if (mountedRef.current && !initialConnectRef.current) {
+          initialConnectRef.current = true;
+          connect();
+        }
+      }, 500);
+    }
 
     return () => {
+      mountedRef.current = false;
+      
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = null;
+      }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
       }
       if (wsRef.current) {
         wsRef.current.close(1000, 'Component unmounting');
+        wsRef.current = null;
       }
     };
-  }, [connect]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
 
-  // Reconnect when conversationId changes
+  // Reconnect when conversationId actually changes (not on initial mount)
   useEffect(() => {
-    if (conversationId !== undefined && isConnected) {
+    if (prevConversationIdRef.current !== conversationId && initialConnectRef.current && mountedRef.current) {
+      prevConversationIdRef.current = conversationId;
       // Reconnect to new conversation
-      disconnect();
-      setTimeout(() => connect(), 100);
+      if (wsRef.current) {
+        wsRef.current.close(1000, 'Switching conversation');
+        wsRef.current = null;
+      }
+      setTimeout(() => {
+        if (mountedRef.current) {
+          connect();
+        }
+      }, 100);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);

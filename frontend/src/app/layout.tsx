@@ -10,9 +10,6 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "WhatsApp Business Chat",
   description: "WhatsApp Business Chat Dashboard - Manage conversations with your customers",
-  icons: {
-    icon: "/favicon.ico",
-  },
 };
 
 export default function RootLayout({

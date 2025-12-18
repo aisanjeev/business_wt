@@ -119,7 +119,13 @@ async def websocket_global_endpoint(
     
     try:
         while True:
-            data = await websocket.receive_text()
+            logger.debug(f"User {user_id} waiting for message...")
+            try:
+                data = await websocket.receive_text()
+                logger.debug(f"User {user_id} received data: {data[:100] if data else 'empty'}")
+            except Exception as recv_error:
+                logger.error(f"WebSocket receive error for user {user_id}: {type(recv_error).__name__}: {recv_error}")
+                break
             
             try:
                 message = json.loads(data)
@@ -134,10 +140,10 @@ async def websocket_global_endpoint(
             except json.JSONDecodeError:
                 pass
                 
-    except WebSocketDisconnect:
-        logger.info(f"User {user_id} disconnected from global notifications")
+    except WebSocketDisconnect as e:
+        logger.info(f"User {user_id} disconnected from global notifications (code: {e.code})")
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"WebSocket error for user {user_id}: {type(e).__name__}: {e}")
     finally:
         await ws_manager.disconnect(websocket)
 

@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import auth, contacts, messages, webhook
+from app.api import auth, contacts, media, messages, webhook
 from app.config import settings
 from app.database import close_db, init_db
 from app.services.message_processor import message_processor
@@ -62,7 +62,7 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -120,6 +120,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(webhook.router, prefix="/api")
 app.include_router(messages.router, prefix="/api")
 app.include_router(contacts.router, prefix="/api")
+app.include_router(media.router, prefix="/api")
 app.include_router(ws_router)
 
 

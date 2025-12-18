@@ -16,6 +16,12 @@ export interface Conversation {
   id: number;
   contact_id: number;
   contact?: Contact;
+  // Fields from ConversationListItem (sidebar list response)
+  contact_name?: string;
+  contact_phone?: string;
+  contact_avatar?: string | null;
+  last_message_type?: string;
+  // Common fields
   thread_id?: string;
   last_message_at: string;
   last_message?: string;
@@ -23,7 +29,7 @@ export interface Conversation {
   assigned_to?: number;
   tags?: string[];
   unread_count?: number;
-  created_at: string;
+  created_at?: string;
 }
 
 // Message types
@@ -39,6 +45,8 @@ export interface Message {
   message_type: MessageType;
   content: string;
   media_url?: string;
+  media_mime_type?: string;
+  media_filename?: string;
   status: MessageStatus;
   timestamp: string;
   created_at: string;

@@ -10,7 +10,7 @@ from app.database import get_db
 from app.models import User
 from app.schemas import Token, UserCreate, UserLogin, UserResponse
 from app.services.auth import (
-    authenticate_user,
+    authenticate_user_by_email,
     create_access_token,
     create_user,
     get_current_user,
@@ -58,12 +58,12 @@ async def login(
     Raises:
         HTTPException: If authentication fails.
     """
-    user = await authenticate_user(db, credentials.username, credentials.password)
+    user = await authenticate_user_by_email(db, credentials.email, credentials.password)
     
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
@@ -77,6 +77,7 @@ async def login(
         access_token=access_token,
         token_type="bearer",
         expires_in=settings.jwt_expiration,
+        user=UserResponse.model_validate(user),
     )
 
 

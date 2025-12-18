@@ -260,7 +260,7 @@ class UserResponse(UserBase):
 class UserLogin(BaseSchema):
     """Schema for user login."""
     
-    username: str
+    email: EmailStr
     password: str
 
 
@@ -270,6 +270,7 @@ class Token(BaseSchema):
     access_token: str
     token_type: str = "bearer"
     expires_in: int
+    user: Optional["UserResponse"] = None
 
 
 class TokenPayload(BaseSchema):
