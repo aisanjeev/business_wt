@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - DATABASE_TYPE=mysql
+      - DATABASE_URL=mysql+pymysql://whatsapp_user:whatsapp_pass@db:3306/whatsapp_chat
+      - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID}
+      - WHATSAPP_BUSINESS_ACCOUNT_ID=${WHATSAPP_BUSINESS_ACCOUNT_ID}
+      - WHATSAPP_API_TOKEN=${WHATSAPP_API_TOKEN}
+      - WEBHOOK_VERIFY_TOKEN=${WEBHOOK_VERIFY_TOKEN}
+      - JWT_SECRET=${JWT_SECRET:-change_me_in_production}
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:8000
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - whatsapp-network
+
+  db:
+    image: mysql:8.0
+    environment:
+      - MYSQL_ROOT_PASSWORD=root_password
+      - MYSQL_DATABASE=whatsapp_chat
+      - MYSQL_USER=whatsapp_user
+      - MYSQL_PASSWORD=whatsapp_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - whatsapp-network
+
+networks:
+  whatsapp-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
