@@ -1,1 +1,340 @@
+# =============================================================================
+# WhatsApp Business Backend Deployment Workflow
+# =============================================================================
+# This workflow automatically deploys the FastAPI backend to VPS.
+#
+# DEPLOYMENT STRATEGY:
+# --------------------
+# - Push to `develop` branch → Deploys to STAGING (automatic)
+# - Push to `main` branch    → Deploys to PRODUCTION (automatic)
+#
+# ENVIRONMENTS:
+# -------------
+# Staging:    staging.api.wt.techpath.pro (Port 8093)
+# Production: api.wt.techpath.pro (Port 8092)
+#
+# REQUIRED GITHUB SECRETS:
+# ------------------------
+# Repository Secrets (Settings > Secrets > Actions):
+#   SSH_HOST     - VPS hostname or IP address
+#   SSH_USER     - SSH username (e.g., root)
+#   SSH_PASSWORD - SSH password
+#   SSH_PORT     - SSH port (optional, defaults to 22)
+#
+# Environment Secrets (Settings > Environments > [env] > Secrets):
+#   ENV_FILE     - Environment variables for staging/production
+#
+# VPS PREREQUISITES:
+# ------------------
+# mkdir -p /home/techpath-staging-api-wt/htdocs/staging.api.wt.techpath.pro
+# mkdir -p /home/techpath-api-wt/htdocs/api.wt.techpath.pro
+# =============================================================================
+
+name: Deploy Backend to VPS
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-backend.yml'
+  
+  # Allow manual trigger from GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+# =============================================================================
+# STAGING DEPLOYMENT
+# =============================================================================
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    
+    environment:
+      name: staging
+      url: https://staging.api.wt.techpath.pro
+    
+    env:
+      DEPLOY_PATH: /home/techpath-staging-api-wt/htdocs/staging.api.wt.techpath.pro
+      SERVICE_NAME: techpath-staging-api-wt
+      APP_PORT: 8094
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy files to Staging VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: "backend/"
+          target: ${{ env.DEPLOY_PATH }}
+          strip_components: 1
+          rm: false
+
+      - name: Setup and restart staging service
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            
+            echo "=========================================="
+            echo "🚀 WhatsApp Business STAGING Deployment"
+            echo "=========================================="
+            
+            DEPLOY_DIR="${{ env.DEPLOY_PATH }}"
+            SERVICE_NAME="${{ env.SERVICE_NAME }}"
+            APP_PORT="${{ env.APP_PORT }}"
+            
+            cd "$DEPLOY_DIR"
+            
+            # Create data directory for SQLite and uploads
+            echo "📁 Creating data directories..."
+            mkdir -p data/uploads
+            mkdir -p media/audio media/documents media/images media/stickers media/video
+            
+            # Write .env file from GitHub secrets
+            echo "📝 Writing .env file..."
+            cat > .env << 'ENVEOF'
+            ${{ secrets.ENV_FILE }}
+            ENVEOF
+            chmod 600 .env
+            
+            # Clean up cache files
+            echo "🧹 Cleaning up cache files..."
+            find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+            find . -type f -name "*.pyc" -delete 2>/dev/null || true
+            
+            # Setup virtual environment
+            echo "🐍 Setting up Python virtual environment..."
+            if [ ! -d "venv" ]; then
+                python3 -m venv venv
+            fi
+            source venv/bin/activate
+            
+            # Install dependencies
+            echo "📦 Installing dependencies..."
+            pip install --upgrade pip poetry
+            poetry config virtualenvs.create false
+            poetry install --no-interaction --no-ansi --only main
+            
+            # Run database migrations
+            echo "🗄️ Running database migrations..."
+            alembic upgrade head || echo "⚠️ Migration skipped or failed"
+            
+            # Setup systemd service
+            echo "⚙️ Setting up systemd service..."
+            
+            cat > /etc/systemd/system/${SERVICE_NAME}.service << SERVICEEOF
+            [Unit]
+            Description=WhatsApp Business Staging API Service
+            After=network.target
+            
+            [Service]
+            Type=simple
+            User=root
+            WorkingDirectory=${DEPLOY_DIR}
+            Environment="PATH=${DEPLOY_DIR}/venv/bin:/usr/local/bin:/usr/bin:/bin"
+            Environment="PYTHONUNBUFFERED=1"
+            ExecStart=${DEPLOY_DIR}/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT}
+            Restart=always
+            RestartSec=10
+            
+            [Install]
+            WantedBy=multi-user.target
+            SERVICEEOF
+            
+            # Restart service
+            echo "🔄 Restarting service..."
+            systemctl daemon-reload
+            systemctl enable ${SERVICE_NAME}.service 2>/dev/null || true
+            
+            # Kill any process on the port
+            PID=$(lsof -t -i:${APP_PORT} 2>/dev/null) || true
+            if [ -n "$PID" ]; then
+                kill -9 $PID 2>/dev/null || true
+                sleep 2
+            fi
+            
+            systemctl restart ${SERVICE_NAME}.service
+            sleep 5
+            
+            # Health check
+            echo "🏥 Health check..."
+            if systemctl is-active --quiet ${SERVICE_NAME}.service; then
+                echo "✅ Staging service is running on port ${APP_PORT}!"
+            else
+                echo "❌ Service failed!"
+                journalctl -u ${SERVICE_NAME}.service --no-pager -n 30
+                exit 1
+            fi
+            
+            echo "=========================================="
+            echo "✨ STAGING deployment complete!"
+            echo "   URL: https://staging.api.wt.techpath.pro"
+            echo "=========================================="
+
+# =============================================================================
+# PRODUCTION DEPLOYMENT
+# =============================================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+    
+    environment:
+      name: production
+      url: https://api.wt.techpath.pro
+    
+    env:
+      DEPLOY_PATH: /home/techpath-api-wt/htdocs/api.wt.techpath.pro
+      SERVICE_NAME: techpath-api-wt
+      APP_PORT: 8095
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy files to Production VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: "backend/"
+          target: ${{ env.DEPLOY_PATH }}
+          strip_components: 1
+          rm: false
+
+      - name: Setup and restart production service
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            
+            echo "=========================================="
+            echo "🚀 WhatsApp Business PRODUCTION Deployment"
+            echo "=========================================="
+            
+            DEPLOY_DIR="${{ env.DEPLOY_PATH }}"
+            SERVICE_NAME="${{ env.SERVICE_NAME }}"
+            APP_PORT="${{ env.APP_PORT }}"
+            
+            cd "$DEPLOY_DIR"
+            
+            # Create data directory for SQLite and uploads
+            echo "📁 Creating data directories..."
+            mkdir -p data/uploads
+            mkdir -p media/audio media/documents media/images media/stickers media/video
+            
+            # Write .env file from GitHub secrets
+            echo "📝 Writing .env file..."
+            cat > .env << 'ENVEOF'
+            ${{ secrets.ENV_FILE }}
+            ENVEOF
+            chmod 600 .env
+            
+            # Clean up cache files
+            echo "🧹 Cleaning up cache files..."
+            find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+            find . -type f -name "*.pyc" -delete 2>/dev/null || true
+            
+            # Setup virtual environment
+            echo "🐍 Setting up Python virtual environment..."
+            if [ ! -d "venv" ]; then
+                python3 -m venv venv
+            fi
+            source venv/bin/activate
+            
+            # Install dependencies
+            echo "📦 Installing dependencies..."
+            pip install --upgrade pip poetry
+            poetry config virtualenvs.create false
+            poetry install --no-interaction --no-ansi --only main
+            
+            # Run database migrations
+            echo "🗄️ Running database migrations..."
+            alembic upgrade head || echo "⚠️ Migration skipped or failed"
+            
+            # Setup systemd service
+            echo "⚙️ Setting up systemd service..."
+            
+            cat > /etc/systemd/system/${SERVICE_NAME}.service << SERVICEEOF
+            [Unit]
+            Description=WhatsApp Business Production API Service
+            After=network.target
+            
+            [Service]
+            Type=simple
+            User=root
+            WorkingDirectory=${DEPLOY_DIR}
+            Environment="PATH=${DEPLOY_DIR}/venv/bin:/usr/local/bin:/usr/bin:/bin"
+            Environment="PYTHONUNBUFFERED=1"
+            ExecStart=${DEPLOY_DIR}/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT} --workers 2
+            Restart=always
+            RestartSec=10
+            
+            [Install]
+            WantedBy=multi-user.target
+            SERVICEEOF
+            
+            # Restart service
+            echo "🔄 Restarting service..."
+            systemctl daemon-reload
+            systemctl enable ${SERVICE_NAME}.service 2>/dev/null || true
+            
+            # Kill any process on the port
+            PID=$(lsof -t -i:${APP_PORT} 2>/dev/null) || true
+            if [ -n "$PID" ]; then
+                kill -9 $PID 2>/dev/null || true
+                sleep 2
+            fi
+            
+            systemctl restart ${SERVICE_NAME}.service
+            sleep 5
+            
+            # Health check
+            echo "🏥 Health check..."
+            if systemctl is-active --quiet ${SERVICE_NAME}.service; then
+                echo "✅ Production service is running on port ${APP_PORT}!"
+            else
+                echo "❌ Service failed!"
+                journalctl -u ${SERVICE_NAME}.service --no-pager -n 30
+                exit 1
+            fi
+            
+            echo "=========================================="
+            echo "✨ PRODUCTION deployment complete!"
+            echo "   URL: https://api.wt.techpath.pro"
+            echo "=========================================="
+
+      - name: Deployment failed notification
+        if: failure()
+        run: |
+          echo "❌ PRODUCTION deployment failed!"
+          echo "Check the logs above for details."
 
