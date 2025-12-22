@@ -257,8 +257,8 @@ const ConversationList: React.FC = () => {
 
   // Sort by most recent message
   const sortedConversations = [...filteredConversations].sort((a, b) => {
-    const dateA = new Date(a.last_message_at || a.created_at).getTime();
-    const dateB = new Date(b.last_message_at || b.created_at).getTime();
+    const dateA = new Date(a.last_message_at || a.created_at || 0).getTime();
+    const dateB = new Date(b.last_message_at || b.created_at || 0).getTime();
     return dateB - dateA;
   });
 

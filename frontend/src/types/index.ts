@@ -66,6 +66,7 @@ export interface MessageTemplate {
 // WebSocket event types
 export type WebSocketEventType = 
   | 'message'
+  | 'new_message'
   | 'typing'
   | 'read'
   | 'status_update'
