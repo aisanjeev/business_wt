@@ -100,6 +100,18 @@ class Settings(BaseSettings):
                 url = url.replace("sqlite://", "sqlite+aiosqlite://")
             elif not async_mode and "aiosqlite" in url:
                 url = url.replace("sqlite+aiosqlite://", "sqlite://")
+        elif self.is_mysql:
+            # Handle MySQL async/sync driver conversion
+            if async_mode:
+                # Convert to aiomysql for async mode
+                if "pymysql" in url:
+                    url = url.replace("mysql+pymysql", "mysql+aiomysql")
+                elif "mysql://" in url and "aiomysql" not in url:
+                    url = url.replace("mysql://", "mysql+aiomysql://")
+            else:
+                # Convert to pymysql for sync mode
+                if "aiomysql" in url:
+                    url = url.replace("mysql+aiomysql", "mysql+pymysql")
         
         return url
 
