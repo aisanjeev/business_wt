@@ -8,7 +8,7 @@ import { formatPhoneNumber, getInitials, stringToColor } from '@/utils/formatter
 import ContactInfo from './ContactInfo';
 import ContactListManager from './ContactListManager';
 
-type SourceFilter = 'all' | 'imported' | 'chat' | 'manual';
+type SourceFilter = 'all' | 'imported' | 'chat' | 'manual' | 'blocked';
 type ViewMode = 'contacts' | 'lists';
 
 interface ContactsListProps {
@@ -57,12 +57,13 @@ const ContactsList: React.FC<ContactsListProps> = ({ onContactSelect }) => {
         page,
         50,
         searchQuery || undefined,
-        sourceFilter
+        sourceFilter === 'blocked' ? undefined : sourceFilter === 'all' ? undefined : sourceFilter,
+        sourceFilter === 'blocked' ? 'blocked' : undefined
       );
 
       if (response.success && response.data) {
         setContacts(response.data.items);
-        setTotalPages(response.data.total_pages);
+        setTotalPages(Math.ceil(response.data.total / response.data.page_size));
       } else {
         setError(response.error || 'Failed to load contacts');
       }
@@ -122,6 +123,7 @@ const ContactsList: React.FC<ContactsListProps> = ({ onContactSelect }) => {
     { id: 'imported', label: 'Imported' },
     { id: 'chat', label: 'Chat Contacts' },
     { id: 'manual', label: 'Manually Added' },
+    { id: 'blocked', label: 'Blocked' },
   ];
 
   return (

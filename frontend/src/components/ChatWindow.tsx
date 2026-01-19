@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { useConversationStore, useMessageStore, useUIStore, useAuthStore } from '@/hooks/useAppState';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { messageApi, mediaApi, contactApi, getMediaUrl } from '@/services/api';
-import { Message, MessageStatus, Contact } from '@/types';
+import { Message, MessageStatus, MessageType, Contact } from '@/types';
 import { formatMessageTime, getInitials, stringToColor } from '@/utils/formatters';
 import ContactInfo from './ContactInfo';
 
@@ -445,7 +445,7 @@ const ChatWindow: React.FC = () => {
     const content = inputValue.trim();
     let mediaUrl: string | undefined;
     let mediaMimeType: string | undefined;
-    let messageType = 'text';
+    let messageType: MessageType = 'text';
     
     // Upload file if selected
     if (selectedFile) {
@@ -498,7 +498,7 @@ const ChatWindow: React.FC = () => {
       message_id: `temp-${Date.now()}`,
       sender_type: 'outbound',
       message_type: messageType,
-      content: content || undefined,
+      content: content || '',
       media_url: mediaUrl,
       media_mime_type: mediaMimeType,
       status: 'pending',

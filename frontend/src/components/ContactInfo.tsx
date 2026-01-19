@@ -98,6 +98,36 @@ const ContactInfo: React.FC<ContactInfoProps> = ({
     }
   };
 
+  const handleBlockContact = async () => {
+    if (!contact) return;
+    
+    const confirmed = window.confirm(`Are you sure you want to block ${contact.name || contact.phone_number}? This will prevent them from sending you messages.`);
+    
+    if (!confirmed) {
+      return;
+    }
+    
+    setLoading(true);
+    
+    try {
+      const response = await contactApi.updateContact(contact.id, { status: 'blocked' });
+      
+      if (response.success) {
+        alert('Contact blocked successfully');
+        onClose(); // Close the contact info panel
+        // Optionally reload the page or refresh contact data
+        window.location.reload();
+      } else {
+        alert(`Failed to block contact: ${response.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Error blocking contact:', error);
+      alert('An error occurred while blocking the contact');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleRemoveFromList = async (listId: number) => {
     if (!contact) return;
     
@@ -203,23 +233,30 @@ const ContactInfo: React.FC<ContactInfoProps> = ({
           </div>
           <h3 className="text-xl font-semibold text-gray-900">{contactName}</h3>
           <p className="text-gray-500">{formatPhoneNumber(contactPhone)}</p>
-          {contact?.source && (
-            <span
-              className={`inline-block mt-2 px-3 py-1 rounded-full text-xs font-medium ${
-                contact.source === 'imported'
-                  ? 'bg-blue-100 text-blue-700'
-                  : contact.source === 'chat'
-                  ? 'bg-green-100 text-green-700'
-                  : 'bg-gray-100 text-gray-700'
-              }`}
-            >
-              {contact.source === 'imported'
-                ? 'Imported Contact'
-                : contact.source === 'chat'
-                ? 'Chat Contact'
-                : 'Manually Added'}
-            </span>
+          <div className="flex flex-wrap gap-2 justify-center mt-2">
+            {contact?.status === 'blocked' && contact?.blocked_at && (
+              <span className="inline-block px-3 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700">
+                Blocked {formatRelativeTime(contact.blocked_at)}
+              </span>
             )}
+            {contact?.source && (
+              <span
+                className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${
+                  contact.source === 'imported'
+                    ? 'bg-blue-100 text-blue-700'
+                    : contact.source === 'chat'
+                    ? 'bg-green-100 text-green-700'
+                    : 'bg-gray-100 text-gray-700'
+                }`}
+              >
+                {contact.source === 'imported'
+                  ? 'Imported Contact'
+                  : contact.source === 'chat'
+                  ? 'Chat Contact'
+                  : 'Manually Added'}
+              </span>
+            )}
+          </div>
           </div>
 
           {/* Details section */}
@@ -280,13 +317,26 @@ const ContactInfo: React.FC<ContactInfoProps> = ({
           {/* Status */}
           <div className="flex items-center gap-3 py-3 border-b border-gray-100">
             <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center">
-              <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
+              {contact?.status === 'blocked' ? (
+                <svg className="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              )}
             </div>
             <div>
               <p className="text-sm text-gray-500">Status</p>
-              <p className="font-medium text-gray-900 capitalize">{contact?.status || 'Unknown'}</p>
+              <p className={`font-medium ${contact?.status === 'blocked' ? 'text-red-600' : 'text-gray-900'}`}>
+                {contact?.status === 'blocked' ? 'Blocked' : contact?.status || 'Active'}
+              </p>
+              {contact?.status === 'blocked' && contact?.blocked_at && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Blocked {formatRelativeTime(contact.blocked_at)}
+                </p>
+              )}
             </div>
           </div>
 
@@ -455,11 +505,15 @@ const ContactInfo: React.FC<ContactInfoProps> = ({
               <span>Archive conversation</span>
             </button>
             
-            <button className="w-full py-2 px-4 text-left text-red-600 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-3">
+            <button 
+              onClick={handleBlockContact}
+              disabled={loading || !contact}
+              className="w-full py-2 px-4 text-left text-red-600 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
               </svg>
-              <span>Block contact</span>
+              <span>{loading ? 'Blocking...' : 'Block contact'}</span>
             </button>
           </div>
           </div>

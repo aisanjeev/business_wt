@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { campaignApi, contactListApi } from '@/services/api';
-import { BulkMessageCampaign, CampaignStatus, ContactList } from '@/types';
+import { campaignApi, contactListApi, templateApi } from '@/services/api';
+import { BulkMessageCampaign, CampaignStatus, ContactList, MessageTemplate } from '@/types';
 import CampaignLogs from './CampaignLogs';
+import TemplatePreview from './TemplateManagement/TemplatePreview';
 
 interface BulkMessagingProps {
   onCampaignCreated?: () => void;
@@ -20,6 +21,11 @@ const BulkMessaging: React.FC<BulkMessagingProps> = ({ onCampaignCreated }) => {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'create' | 'list'>('create');
   const [viewLogsCampaignId, setViewLogsCampaignId] = useState<number | null>(null);
+  
+  // Template selection state
+  const [availableTemplates, setAvailableTemplates] = useState<MessageTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
+  const [templateVariables, setTemplateVariables] = useState<Record<string, string>>({});
 
   const loadLists = useCallback(async () => {
     try {
@@ -32,13 +38,55 @@ const BulkMessaging: React.FC<BulkMessagingProps> = ({ onCampaignCreated }) => {
     }
   }, []);
 
+  const loadTemplates = useCallback(async () => {
+    try {
+      const response = await templateApi.getTemplates({
+        page: 1,
+        page_size: 100,
+        status: 'APPROVED'
+      });
+      if (response.success && response.data) {
+        setAvailableTemplates(response.data.items || []);
+      }
+    } catch (err) {
+      console.error('Failed to load templates:', err);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab === 'list') {
       loadCampaigns();
     } else {
       loadLists();
+      loadTemplates();
     }
-  }, [activeTab, loadLists]);
+  }, [activeTab, loadLists, loadTemplates]);
+
+  // Extract variables from template when selected
+  useEffect(() => {
+    if (selectedTemplateId) {
+      const template = availableTemplates.find(t => t.id === selectedTemplateId);
+      if (template) {
+        // Extract variables from body_text
+        const bodyText = template.body_text || template.content || '';
+        const matches = bodyText.match(/\{\{(\d+)\}\}/g) || [];
+        const varNumbers = Array.from(new Set(
+          matches.map(m => m.replace(/[{}]/g, ''))
+        )).sort((a, b) => parseInt(a) - parseInt(b));
+        
+        // Initialize template variables (preserve existing values if template hasn't changed)
+        setTemplateVariables(prev => {
+          const newVars: Record<string, string> = {};
+          varNumbers.forEach(num => {
+            newVars[num] = prev[num] || '';
+          });
+          return newVars;
+        });
+      }
+    } else {
+      setTemplateVariables({});
+    }
+  }, [selectedTemplateId, availableTemplates]);
 
   const loadCampaigns = async () => {
     setLoading(true);
@@ -53,8 +101,28 @@ const BulkMessaging: React.FC<BulkMessagingProps> = ({ onCampaignCreated }) => {
   const handleCreateCampaign = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!campaignName.trim() || !messageContent.trim()) {
-      setError('Please fill in all required fields');
+    if (!campaignName.trim()) {
+      setError('Campaign name is required');
+      return;
+    }
+
+    // If template is selected, validate variables; otherwise require message content
+    if (selectedTemplateId) {
+      const template = availableTemplates.find(t => t.id === selectedTemplateId);
+      if (template) {
+        const bodyText = template.body_text || template.content || '';
+        const matches = bodyText.match(/\{\{(\d+)\}\}/g) || [];
+        const varNumbers = Array.from(new Set(matches.map(m => m.replace(/[{}]/g, ''))));
+        
+        // Validate all variables are filled
+        const missingVars = varNumbers.filter(num => !templateVariables[num] || !templateVariables[num].trim());
+        if (missingVars.length > 0) {
+          setError(`Please fill in all template variables: ${missingVars.map(v => `{{${v}}}`).join(', ')}`);
+          return;
+        }
+      }
+    } else if (!messageContent.trim()) {
+      setError('Please provide message content or select a template');
       return;
     }
 
@@ -69,7 +137,9 @@ const BulkMessaging: React.FC<BulkMessagingProps> = ({ onCampaignCreated }) => {
 
     const response = await campaignApi.createCampaign({
       name: campaignName,
-      message_content: messageContent,
+      message_content: messageContent || '', // Required field, but can be empty if using template
+      template_id: selectedTemplateId || undefined,
+      template_variables: selectedTemplateId ? templateVariables : undefined,
       list_ids: selectedListIds.length > 0 ? selectedListIds : undefined,
       tag_names: selectedTags.length > 0 ? selectedTags : undefined,
     });
@@ -79,6 +149,8 @@ const BulkMessaging: React.FC<BulkMessagingProps> = ({ onCampaignCreated }) => {
       setMessageContent('');
       setSelectedListIds([]);
       setSelectedTags([]);
+      setSelectedTemplateId(null);
+      setTemplateVariables({});
       onCampaignCreated?.();
       setActiveTab('list');
       loadCampaigns();
@@ -101,6 +173,34 @@ const BulkMessaging: React.FC<BulkMessagingProps> = ({ onCampaignCreated }) => {
       loadCampaigns();
     } else {
       setError(response.error || 'Failed to start campaign');
+    }
+    setLoading(false);
+  };
+
+  const handlePublishCampaign = async (campaignId: number) => {
+    if (!confirm('Publish this campaign? It will be ready to run.')) {
+      return;
+    }
+
+    setLoading(true);
+    const response = await campaignApi.updateCampaign(campaignId, { status: 'scheduled' });
+    
+    if (response.success) {
+      loadCampaigns();
+    } else {
+      setError(response.error || 'Failed to publish campaign');
+    }
+    setLoading(false);
+  };
+
+  const handleStatusChange = async (campaignId: number, newStatus: 'draft' | 'scheduled' | 'sending' | 'completed' | 'failed') => {
+    setLoading(true);
+    const response = await campaignApi.updateCampaign(campaignId, { status: newStatus });
+    
+    if (response.success) {
+      loadCampaigns();
+    } else {
+      setError(response.error || 'Failed to update campaign status');
     }
     setLoading(false);
   };
@@ -155,17 +255,84 @@ const BulkMessaging: React.FC<BulkMessagingProps> = ({ onCampaignCreated }) => {
             />
           </div>
 
+          {/* Template Selection */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Message Content *
+              Select Template (optional)
+            </label>
+            <select
+              value={selectedTemplateId || ''}
+              onChange={(e) => setSelectedTemplateId(e.target.value ? parseInt(e.target.value) : null)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+            >
+              <option value="">None - Use plain text message</option>
+              {availableTemplates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name} ({template.category} - {template.language})
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              Select an approved template to use for this campaign, or leave empty to use plain text
+            </p>
+          </div>
+
+          {/* Template Variables */}
+          {selectedTemplateId && (() => {
+            const template = availableTemplates.find(t => t.id === selectedTemplateId);
+            if (!template) return null;
+            
+            const varNumbers = Object.keys(templateVariables).sort((a, b) => parseInt(a) - parseInt(b));
+            
+            return (
+              <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Template Variables *
+                </label>
+                <div className="space-y-3">
+                  {varNumbers.map((varNum) => (
+                    <div key={varNum}>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Variable {`{{${varNum}}}`}
+                      </label>
+                      <input
+                        type="text"
+                        value={templateVariables[varNum] || ''}
+                        onChange={(e) => setTemplateVariables(prev => ({ ...prev, [varNum]: e.target.value }))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 text-sm"
+                        placeholder={`Enter value for {{${varNum}}}`}
+                        required
+                      />
+                    </div>
+                  ))}
+                </div>
+                {varNumbers.length > 0 && (
+                  <div className="mt-4 border-t border-gray-200 pt-4">
+                    <p className="text-xs font-medium text-gray-700 mb-2">Preview:</p>
+                    <div className="bg-white border border-gray-200 rounded p-3">
+                      <TemplatePreview
+                        template={template}
+                        sampleVariables={templateVariables}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Message Content - Optional when template is selected */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Message Content {selectedTemplateId ? '(optional - used as fallback)' : '*'}
             </label>
             <textarea
               value={messageContent}
               onChange={(e) => setMessageContent(e.target.value)}
               rows={6}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
-              placeholder="Enter your message here..."
-              required
+              placeholder={selectedTemplateId ? "Optional fallback message..." : "Enter your message here..."}
+              required={!selectedTemplateId}
             />
             <p className="mt-1 text-xs text-gray-500">
               {messageContent.length} characters (Recommended: Under 1600 for best delivery)
@@ -282,6 +449,7 @@ const BulkMessaging: React.FC<BulkMessagingProps> = ({ onCampaignCreated }) => {
                 campaign={campaign}
                 onStart={() => handleStartCampaign(campaign.id)}
                 onViewLogs={() => setViewLogsCampaignId(campaign.id)}
+                onStatusChange={(newStatus) => handleStatusChange(campaign.id, newStatus)}
               />
             ))
           )}
@@ -295,9 +463,10 @@ interface CampaignCardProps {
   campaign: BulkMessageCampaign;
   onStart: () => void;
   onViewLogs: () => void;
+  onStatusChange?: (newStatus: 'draft' | 'scheduled' | 'sending' | 'completed' | 'failed') => void;
 }
 
-const CampaignCard: React.FC<CampaignCardProps> = ({ campaign, onStart, onViewLogs }) => {
+const CampaignCard: React.FC<CampaignCardProps> = ({ campaign, onStart, onViewLogs, onStatusChange }) => {
   const [status, setStatus] = useState<CampaignStatus | null>(null);
 
   useEffect(() => {
@@ -378,12 +547,35 @@ const CampaignCard: React.FC<CampaignCardProps> = ({ campaign, onStart, onViewLo
       </div>
 
       {campaign.status === 'draft' ? (
-        <button
-          onClick={onStart}
-          className="w-full px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-sm"
-        >
-          Start Campaign
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => onStatusChange?.('scheduled')}
+            className="flex-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors text-sm"
+          >
+            Publish
+          </button>
+          <button
+            onClick={onStart}
+            className="flex-1 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-sm"
+          >
+            Run Now
+          </button>
+        </div>
+      ) : campaign.status === 'scheduled' ? (
+        <div className="flex gap-2">
+          <button
+            onClick={onStart}
+            className="flex-1 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-sm"
+          >
+            Run Campaign
+          </button>
+          <button
+            onClick={() => onStatusChange?.('draft')}
+            className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors text-sm"
+          >
+            Unpublish
+          </button>
+        </div>
       ) : (
         <button
           onClick={onViewLogs}
