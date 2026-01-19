@@ -1,13 +1,18 @@
 """WhatsApp webhook endpoints."""
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database import get_db_context
 from app.schemas import WhatsAppWebhookPayload
 from app.services.message_processor import message_processor
+from app.services.template import TemplateSyncService
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+sync_service = TemplateSyncService()
 
 router = APIRouter(prefix="/webhook", tags=["webhook"])
 
@@ -95,11 +100,24 @@ async def receive_webhook(
         # Parse the webhook payload
         payload = WhatsAppWebhookPayload(**body)
         
-        # Process in background to ensure quick response
-        background_tasks.add_task(
-            message_processor.process_webhook,
-            payload,
-        )
+        # Check for template status updates
+        for entry in payload.entry:
+            for change in entry.changes:
+                if change.field == "message_template_status_update":
+                    # Handle template status update
+                    background_tasks.add_task(
+                        handle_template_status_update,
+                        change.value,
+                    )
+                    logger.info("Template status update queued for processing")
+                    continue
+                
+                # Process other webhook events (messages, etc.)
+                if change.field == "messages":
+                    background_tasks.add_task(
+                        message_processor.process_webhook,
+                        payload,
+                    )
         
         logger.info("Webhook queued for processing")
         return {"status": "received"}
@@ -109,6 +127,36 @@ async def receive_webhook(
         logger.error(f"Error parsing webhook payload: {e}")
         logger.error(f"Raw payload: {body}")
         return {"status": "error", "message": str(e)}
+
+
+async def handle_template_status_update(webhook_data: dict) -> None:
+    """Handle template status update from Meta webhook.
+    
+    Args:
+        webhook_data: Webhook payload for template status update.
+    """
+    try:
+        async with get_db_context() as db:
+            template = await sync_service.handle_webhook_status_update(
+                db=db,
+                webhook_data=webhook_data,
+            )
+            
+            if template:
+                logger.info(f"Template {template.id} status updated to {template.status}")
+                
+                # Broadcast status update via WebSocket if manager is available
+                if message_processor.ws_manager:
+                    await message_processor.ws_manager.broadcast_json({
+                        "type": "template_status_update",
+                        "payload": {
+                            "template_id": template.id,
+                            "status": template.status,
+                            "rejection_reason": template.rejection_reason,
+                        },
+                    })
+    except Exception as e:
+        logger.error(f"Error handling template status update: {e}", exc_info=True)
 
 
 @router.get("/health")

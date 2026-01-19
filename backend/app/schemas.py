@@ -64,6 +64,7 @@ class ContactResponse(ContactBase):
     id: int
     tags: Optional[list[str]] = Field(default_factory=list)
     list_ids: Optional[list[int]] = Field(default_factory=list)  # Populated from relationships
+    blocked_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -206,36 +207,86 @@ class TemplateBase(BaseSchema):
     """Base template schema."""
     
     name: str = Field(..., max_length=100)
-    content: str
-    category: str = Field(default="utility", max_length=50)
+    category: str = Field(default="utility", max_length=50)  # marketing, utility, authentication
     language: str = Field(default="en", max_length=10)
-    variables: Optional[dict] = Field(default_factory=dict)
+    # Template structure
+    header_type: Optional[str] = Field(None, max_length=20)  # TEXT, IMAGE, VIDEO, DOCUMENT, None
+    header_content: Optional[str] = None  # Header text or media URL
+    body_text: str = Field(..., max_length=1024)  # Main message body with variables {{1}}, {{2}}
+    footer_text: Optional[str] = Field(None, max_length=60)  # Footer text
+    buttons: Optional[dict] = None  # JSON structure for buttons
+    # Meta API fields
+    waba_id: Optional[str] = Field(None, max_length=100)  # WhatsApp Business Account ID
+    variables: Optional[dict] = Field(default_factory=dict)  # Variable definitions and sample data
+    # Legacy fields (for backward compatibility)
+    content: Optional[str] = None  # Legacy field, use body_text instead
 
 
 class TemplateCreate(TemplateBase):
     """Schema for creating a template."""
     
-    template_id: Optional[str] = Field(None, max_length=100)
+    # Override body_text to be optional for drafts
+    body_text: Optional[str] = Field(None, max_length=1024)
+    # Optional fields for draft creation
+    status: Optional[str] = Field(default="PENDING", max_length=20)
 
 
 class TemplateUpdate(BaseSchema):
     """Schema for updating a template."""
     
     name: Optional[str] = Field(None, max_length=100)
-    content: Optional[str] = None
     category: Optional[str] = Field(None, max_length=50)
+    language: Optional[str] = Field(None, max_length=10)
     status: Optional[str] = Field(None, max_length=20)
+    # Template structure
+    header_type: Optional[str] = Field(None, max_length=20)
+    header_content: Optional[str] = None
+    body_text: Optional[str] = Field(None, max_length=1024)
+    footer_text: Optional[str] = Field(None, max_length=60)
+    buttons: Optional[dict] = None
     variables: Optional[dict] = None
+    # Legacy field
+    content: Optional[str] = None
 
 
 class TemplateResponse(TemplateBase):
     """Schema for template response."""
     
     id: int
-    template_id: Optional[str] = None
-    status: str
+    user_id: int
+    # Meta API fields
+    meta_template_id: Optional[str] = None  # Meta API template ID
+    template_id: Optional[str] = None  # Legacy field
+    waba_id: Optional[str] = None
+    status: str  # PENDING, APPROVED, REJECTED, DISABLED, FLAGGED
+    rejection_reason: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+
+class TemplatePreviewRequest(BaseSchema):
+    """Schema for template preview request."""
+    
+    sample_variables: Optional[dict] = Field(default_factory=dict)  # Sample data for variables
+
+
+class TemplatePreviewResponse(BaseSchema):
+    """Schema for template preview response."""
+    
+    header: Optional[str] = None
+    body: str
+    footer: Optional[str] = None
+    buttons: Optional[list] = None
+
+
+class TemplateSyncResponse(BaseSchema):
+    """Schema for template sync response."""
+    
+    success: bool
+    created: int = 0
+    updated: int = 0
+    errors: list[str] = Field(default_factory=list)
+    message: Optional[str] = None
 
 
 # ============================================================================
@@ -817,6 +868,7 @@ class BulkMessageCampaignBase(BaseSchema):
     
     name: str = Field(..., max_length=255)
     template_id: Optional[int] = None
+    template_variables: Optional[dict] = None  # Template variable values
     target_contacts: Optional[dict] = None  # Filter criteria or contact list
     message_content: str
 

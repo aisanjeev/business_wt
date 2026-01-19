@@ -8,10 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import BulkMessageCampaign, CampaignRecipientLog, Contact, Conversation
+from app.schemas import MessageResponse, WSNewMessage
 from app.services.whatsapp import WhatsAppAPIError, WhatsAppClient
 from app.utils.constants import MessageStatus, SenderType
 from app.config import settings
 from app.utils.logger import get_logger
+from app.websocket.manager import ws_manager
 
 logger = get_logger(__name__)
 
@@ -157,6 +159,90 @@ class BulkMessagingService:
         
         return sent_count, failed_count
     
+    def _build_template_components(
+        self,
+        template,
+        template_variables: Optional[dict],
+    ) -> Optional[list]:
+        """Build Meta API components format from template and variables.
+        
+        Args:
+            template: MessageTemplate instance.
+            template_variables: Dictionary of variable values (e.g., {"1": "value1", "2": "value2"}).
+        
+        Returns:
+            List of components in Meta API format, or None if no variables.
+        """
+        if not template_variables:
+            return None
+        
+        components = []
+        
+        # Build header component if header has variables
+        if template.header_type == "TEXT" and template.header_content:
+            # Check if header contains variables
+            import re
+            header_vars = re.findall(r'\{\{(\d+)\}\}', template.header_content)
+            if header_vars:
+                # Get variable values in order
+                header_params = []
+                for var_num in header_vars:
+                    if var_num in template_variables:
+                        header_params.append({
+                            "type": "text",
+                            "text": template_variables[var_num]
+                        })
+                if header_params:
+                    components.append({
+                        "type": "header",
+                        "parameters": header_params
+                    })
+        
+        # Build body component - always check body for variables
+        if template.body_text:
+            import re
+            body_vars = re.findall(r'\{\{(\d+)\}\}', template.body_text)
+            if body_vars:
+                # Get variable values in order (sorted by number)
+                body_params = []
+                for var_num in sorted(set(body_vars), key=int):
+                    if var_num in template_variables:
+                        body_params.append({
+                            "type": "text",
+                            "text": template_variables[var_num]
+                        })
+                if body_params:
+                    components.append({
+                        "type": "body",
+                        "parameters": body_params
+                    })
+        
+        # Build button components if buttons exist
+        if template.buttons and isinstance(template.buttons, dict):
+            buttons = template.buttons.get("buttons", [])
+            for idx, button in enumerate(buttons):
+                if button.get("type") == "QUICK_REPLY" and "text" in button:
+                    # Check if button text has variables
+                    import re
+                    button_vars = re.findall(r'\{\{(\d+)\}\}', button["text"])
+                    if button_vars:
+                        button_params = []
+                        for var_num in button_vars:
+                            if var_num in template_variables:
+                                button_params.append({
+                                    "type": "text",
+                                    "text": template_variables[var_num]
+                                })
+                        if button_params:
+                            components.append({
+                                "type": "button",
+                                "sub_type": "quick_reply",
+                                "index": idx,
+                                "parameters": button_params
+                            })
+        
+        return components if components else None
+    
     async def _send_to_contact(
         self,
         db: AsyncSession,
@@ -197,12 +283,37 @@ class BulkMessagingService:
                 db.add(conversation)
                 await db.flush()
             
+            # Prepare message content
+            message_content = campaign.message_content
+            message_type = "text"
+            
+            # If using template, resolve template content with variables
+            if campaign.template_id:
+                from app.models import MessageTemplate
+                template_result = await db.execute(
+                    select(MessageTemplate).where(MessageTemplate.id == campaign.template_id)
+                )
+                template = template_result.scalar_one_or_none()
+                
+                if template:
+                    # Resolve template body with variables for display in chat
+                    resolved_body = template.body_text or template.content or ""
+                    if campaign.template_variables:
+                        import re
+                        # Replace variables in body text
+                        for var_num, var_value in campaign.template_variables.items():
+                            resolved_body = resolved_body.replace(f"{{{{{var_num}}}}}", var_value)
+                        message_content = resolved_body
+                    else:
+                        message_content = resolved_body
+                    message_type = "template"
+            
             # Create message record
             message = Message(
                 conversation_id=conversation.id,
                 sender_type=SenderType.OUTBOUND.value,
-                message_type="text",
-                content=campaign.message_content,
+                message_type=message_type,
+                content=message_content,
                 status=MessageStatus.PENDING.value,
                 timestamp=datetime.now(),
             )
@@ -210,7 +321,7 @@ class BulkMessagingService:
             await db.flush()
             
             # Create recipient log entry
-            cost = settings.meta_cost_per_text_message
+            cost = settings.meta_cost_per_text_message if message_type == "text" else settings.meta_cost_per_template_message
             recipient_log = CampaignRecipientLog(
                 campaign_id=campaign.id,
                 contact_id=contact.id,
@@ -223,17 +334,28 @@ class BulkMessagingService:
             
             # Send via WhatsApp API
             if campaign.template_id:
-                # Send template message (implement template logic)
+                # Load template from database (already loaded above)
+                if not template:
+                    raise ValueError(f"Template {campaign.template_id} not found")
+                
+                # Build template components
+                components = self._build_template_components(
+                    template,
+                    campaign.template_variables
+                )
+                
+                # Send template message
                 response = await whatsapp_client.send_template_message(
                     to=contact.phone_number,
-                    template_name="campaign_template",  # Get from template_id
-                    language_code="en",
+                    template_name=template.name,
+                    language_code=template.language or "en",
+                    components=components,
                 )
             else:
                 # Send text message
                 response = await whatsapp_client.send_text_message(
                     to=contact.phone_number,
-                    message=campaign.message_content,
+                    message=message_content,
                 )
             
             # Update message with WhatsApp ID
@@ -246,10 +368,17 @@ class BulkMessagingService:
             recipient_log.status = "sent"
             recipient_log.sent_at = datetime.now()
             
-            # Update conversation
+            # Update conversation - ensure it's marked as active and has latest message time
+            conversation.is_active = True
             conversation.last_message_at = datetime.now()
             
             await db.commit()
+            
+            # Broadcast message via WebSocket so it appears in chat history
+            try:
+                await self._broadcast_new_message(message, conversation.id)
+            except Exception as e:
+                logger.warning(f"Failed to broadcast campaign message via WebSocket: {e}")
             
             logger.debug(f"Sent campaign message to {contact.phone_number}")
             return True, recipient_log.id
@@ -277,6 +406,55 @@ class BulkMessagingService:
                 recipient_log.error_message = str(e)
             await db.commit()
             return False, recipient_log.id if 'recipient_log' in locals() else None
+    
+    async def _broadcast_new_message(
+        self,
+        message,
+        conversation_id: int,
+    ) -> None:
+        """Broadcast new message to WebSocket clients.
+        
+        Args:
+            message: The message to broadcast.
+            conversation_id: Conversation ID.
+        """
+        if not ws_manager:
+            return
+        
+        message_response = MessageResponse(
+            id=message.id,
+            conversation_id=message.conversation_id,
+            message_id=message.message_id,
+            sender_type=message.sender_type,
+            message_type=message.message_type,
+            content=message.content,
+            media_url=message.media_url,
+            media_mime_type=message.media_mime_type,
+            media_filename=message.media_filename,
+            status=message.status,
+            error_message=message.error_message,
+            timestamp=message.timestamp,
+            created_at=message.created_at,
+        )
+        
+        event = WSNewMessage(
+            type="new_message",
+            message=message_response,
+            conversation_id=conversation_id,
+        )
+        
+        event_json = event.model_dump_json()
+        
+        logger.debug(f"Broadcasting campaign message to conversation {conversation_id}")
+        
+        # Broadcast to conversation-specific connections
+        await ws_manager.broadcast_to_conversation(
+            conversation_id,
+            event_json,
+        )
+        
+        # Also broadcast to global connections (for notification/list updates)
+        await ws_manager.broadcast_global(event_json)
 
 
 # Singleton instance

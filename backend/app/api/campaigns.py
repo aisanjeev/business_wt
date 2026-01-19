@@ -45,6 +45,7 @@ async def create_campaign(
         Created campaign.
     """
     # Verify template exists if specified
+    template = None
     if campaign_data.template_id:
         from app.models import MessageTemplate
         result = await db.execute(
@@ -58,6 +59,12 @@ async def create_campaign(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Template not found",
+            )
+        # Verify template is approved
+        if template.status != "APPROVED":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only approved templates can be used in campaigns",
             )
     
     # Resolve contacts from lists/tags/contact_ids
@@ -128,6 +135,7 @@ async def create_campaign(
         user_id=current_user.id,
         name=campaign_data.name,
         template_id=campaign_data.template_id,
+        template_variables=campaign_data.template_variables,
         target_contacts=target_contacts_dict if target_contacts_dict.get("contact_ids") else campaign_data.target_contacts,
         message_content=campaign_data.message_content,
         status="draft",
@@ -267,17 +275,23 @@ async def update_campaign(
             detail="Campaign not found",
         )
     
-    # Only allow updating draft campaigns
-    if campaign.status != "draft":
+    # Allow updating draft campaigns, or allow status changes for any campaign
+    update_data = campaign_data.model_dump(exclude_unset=True)
+    
+    # If only status is being updated, allow it for any campaign
+    if len(update_data) == 1 and "status" in update_data:
+        # Allow status updates for any campaign
+        campaign.status = update_data["status"]
+    elif campaign.status != "draft":
+        # For other updates, only allow on draft campaigns
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only draft campaigns can be updated",
+            detail="Only draft campaigns can be updated. Use status update to change campaign status.",
         )
-    
-    # Update fields
-    update_data = campaign_data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(campaign, field, value)
+    else:
+        # Update all fields for draft campaigns
+        for field, value in update_data.items():
+            setattr(campaign, field, value)
     
     campaign.updated_at = datetime.now()
     
@@ -325,7 +339,7 @@ async def start_campaign(
     if campaign.status not in ("draft", "scheduled"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Campaign can only be started if it's in draft or scheduled status",
+            detail=f"Campaign can only be started if it's in draft or scheduled status. Current status: {campaign.status}",
         )
     
     # Check if scheduled time has passed

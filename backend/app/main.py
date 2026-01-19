@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import admin, auth, contacts, contact_lists, media, messages, webhook, meta, usage, campaigns
+from app.api.template import router as template_router
 from app.config import settings
 from app.database import close_db, init_db
 from app.services.media import cleanup_expired_cache
@@ -158,6 +159,7 @@ app.include_router(meta.router, prefix="/api")
 app.include_router(usage.router, prefix="/api")
 app.include_router(campaigns.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(template_router, prefix="/api")
 app.include_router(ws_router)
 
 

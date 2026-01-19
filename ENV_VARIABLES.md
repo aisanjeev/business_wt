@@ -56,6 +56,9 @@ DATABASE_URL=mysql+pymysql://user:password@localhost:3306/whatsapp_chat
 # JWT Authentication
 JWT_SECRET=your_super_secret_jwt_key_here
 
+# WhatsApp API Version (default: v22.0)
+WHATSAPP_API_VERSION=v22.0
+
 # CORS
 CORS_ORIGINS=http://localhost:3000,http://localhost:8000
 ```

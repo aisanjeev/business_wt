@@ -63,6 +63,11 @@ async def get_contacts(
     query = select(Contact).where(Contact.user_id == current_user.id)
     count_query = select(func.count(Contact.id)).where(Contact.user_id == current_user.id)
     
+    # Exclude blocked contacts by default unless explicitly filtering for them
+    if not status_filter or status_filter != "blocked":
+        query = query.where(Contact.status != "blocked")
+        count_query = count_query.where(Contact.status != "blocked")
+    
     # Apply search filter
     if search:
         search_filter = or_(
@@ -289,13 +294,23 @@ async def update_contact(
     
     # Update fields
     update_data = contact_data.model_dump(exclude_unset=True)
+    
+    # Set blocked_at timestamp when status is changed to "blocked"
+    if "status" in update_data:
+        if update_data["status"] == "blocked" and contact.status != "blocked":
+            contact.blocked_at = datetime.now()
+        elif update_data["status"] != "blocked" and contact.status == "blocked":
+            # Clear blocked_at if unblocking
+            contact.blocked_at = None
+    
     for field, value in update_data.items():
-        setattr(contact, field, value)
+        if field != "status":  # Status already handled above
+            setattr(contact, field, value)
     
     await db.commit()
     await db.refresh(contact)
     
-    logger.info(f"Updated contact: {contact.phone_number}")
+    logger.info(f"Updated contact: {contact.phone_number} (status: {contact.status})")
     
     return ContactResponse.model_validate(contact)
 
