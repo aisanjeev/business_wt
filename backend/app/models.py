@@ -39,6 +39,7 @@ class Contact(Base):
     status: Mapped[str] = mapped_column(
         String(20), default="active", index=True
     )
+    blocked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # Timestamp when contact was blocked
     source: Mapped[str] = mapped_column(
         String(20), default="manual", index=True
     )  # "imported", "chat", "manual"
@@ -59,7 +60,7 @@ class Contact(Base):
         "ContactListMembership", back_populates="contact", cascade="all, delete-orphan"
     )
     lists: Mapped[list["ContactList"]] = relationship(
-        "ContactList", secondary="contact_list_memberships", back_populates="contacts"
+        "ContactList", secondary="contact_list_memberships", back_populates="contacts", overlaps="list_memberships"
     )
     
     __table_args__ = (
@@ -198,15 +199,28 @@ class MessageTemplate(Base):
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    template_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
+    template_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # Legacy field
+    content: Mapped[str] = mapped_column(Text, nullable=False)  # Legacy field, kept for backward compatibility
     category: Mapped[str] = mapped_column(
         String(50), default="utility"
     )  # marketing, utility, authentication
     language: Mapped[str] = mapped_column(String(10), default="en")
     status: Mapped[str] = mapped_column(
-        String(20), default="active"
-    )  # active, inactive, pending, rejected
+        String(20), default="PENDING"
+    )  # PENDING, APPROVED, REJECTED, DISABLED, FLAGGED, active (legacy), inactive (legacy)
+    
+    # New template structure fields
+    header_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # TEXT, IMAGE, VIDEO, DOCUMENT, None
+    header_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Header text or media URL
+    body_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Main message body with variables {{1}}, {{2}}
+    footer_text: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)  # Footer text (max 60 chars)
+    buttons: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # JSON structure for buttons
+    
+    # Meta API integration fields
+    meta_template_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # Meta API template ID
+    waba_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # WhatsApp Business Account ID
+    rejection_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Meta rejection reason
+    
     variables: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
@@ -221,6 +235,7 @@ class MessageTemplate(Base):
     __table_args__ = (
         Index("idx_templates_category", "category"),
         Index("idx_templates_status", "status"),
+        Index("idx_templates_waba_id", "waba_id"),
     )
     
     def __repr__(self) -> str:
@@ -422,6 +437,7 @@ class BulkMessageCampaign(Base):
     template_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("message_templates.id", ondelete="SET NULL"), nullable=True
     )
+    template_variables: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # Template variable values
     target_contacts: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # Filter criteria or contact list
     message_content: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(
@@ -567,10 +583,10 @@ class ContactList(Base):
         "ContactListFolder", back_populates="lists"
     )
     memberships: Mapped[list["ContactListMembership"]] = relationship(
-        "ContactListMembership", back_populates="contact_list", cascade="all, delete-orphan"
+        "ContactListMembership", back_populates="contact_list", cascade="all, delete-orphan", overlaps="lists"
     )
     contacts: Mapped[list["Contact"]] = relationship(
-        "Contact", secondary="contact_list_memberships", back_populates="lists"
+        "Contact", secondary="contact_list_memberships", back_populates="lists", overlaps="memberships,list_memberships"
     )
     
     __table_args__ = (
@@ -598,8 +614,8 @@ class ContactListMembership(Base):
     )
     
     # Relationships
-    contact_list: Mapped["ContactList"] = relationship("ContactList", back_populates="memberships")
-    contact: Mapped["Contact"] = relationship("Contact", back_populates="list_memberships")
+    contact_list: Mapped["ContactList"] = relationship("ContactList", back_populates="memberships", overlaps="contacts,lists")
+    contact: Mapped["Contact"] = relationship("Contact", back_populates="list_memberships", overlaps="contacts,lists")
     
     __table_args__ = (
         Index("idx_contact_list_memberships_contact_id", "contact_id"),

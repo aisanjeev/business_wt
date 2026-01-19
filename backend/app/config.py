@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     whatsapp_business_account_id: str = ""
     whatsapp_api_token: str = ""
     webhook_verify_token: str = ""
-    whatsapp_api_version: str = "v18.0"
+    whatsapp_api_version: str = "v22.0"
     
     # Meta OAuth (for customer account connections)
     meta_app_id: str = ""
