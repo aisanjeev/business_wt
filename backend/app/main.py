@@ -1,14 +1,16 @@
 """FastAPI application entry point."""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import auth, contacts, media, messages, webhook
+from app.api import admin, auth, contacts, contact_lists, media, messages, webhook, meta, usage, campaigns
 from app.config import settings
 from app.database import close_db, init_db
+from app.services.media import cleanup_expired_cache
 from app.services.message_processor import message_processor
 from app.utils.logger import get_logger, setup_logging
 from app.websocket.handlers import router as ws_router
@@ -17,6 +19,23 @@ from app.websocket.manager import ws_manager
 # Setup logging
 setup_logging()
 logger = get_logger(__name__)
+
+
+async def cache_cleanup_task():
+    """Background task to periodically clean up expired cache files."""
+    while True:
+        try:
+            # Sleep for 1 hour before next cleanup
+            await asyncio.sleep(3600)  # 1 hour
+            
+            # Run cleanup
+            result = await cleanup_expired_cache()
+            logger.debug(f"Cache cleanup result: {result}")
+        except asyncio.CancelledError:
+            logger.info("Cache cleanup task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Error in cache cleanup task: {e}")
 
 
 @asynccontextmanager
@@ -38,12 +57,25 @@ async def lifespan(app: FastAPI):
     message_processor.set_websocket_manager(ws_manager)
     logger.info("WebSocket manager connected")
     
+    # Start cache cleanup background task
+    cleanup_task = asyncio.create_task(cache_cleanup_task())
+    logger.info("Cache cleanup task started")
+    
     logger.info("Application startup complete")
     
     yield
     
     # Shutdown
     logger.info("Shutting down application...")
+    
+    # Cancel cache cleanup task
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("Cache cleanup task stopped")
+    
     await close_db()
     logger.info("Database connections closed")
     logger.info("Application shutdown complete")
@@ -120,7 +152,12 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(webhook.router, prefix="/api")
 app.include_router(messages.router, prefix="/api")
 app.include_router(contacts.router, prefix="/api")
+app.include_router(contact_lists.router, prefix="/api")
 app.include_router(media.router, prefix="/api")
+app.include_router(meta.router, prefix="/api")
+app.include_router(usage.router, prefix="/api")
+app.include_router(campaigns.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
 app.include_router(ws_router)
 
 

@@ -40,6 +40,19 @@ class Settings(BaseSettings):
     whatsapp_api_token: str = ""
     webhook_verify_token: str = ""
     whatsapp_api_version: str = "v18.0"
+    
+    # Meta OAuth (for customer account connections)
+    meta_app_id: str = ""
+    meta_app_secret: str = ""
+    meta_oauth_redirect_uri: str = ""
+    
+    # Encryption
+    encryption_key: str = "change_this_in_production_32_chars"  # Must be 32 bytes for AES-256
+    
+    # Meta Cost Calculation (per message type)
+    meta_cost_per_text_message: float = 0.005  # $0.005 per text message (example)
+    meta_cost_per_template_message: float = 0.005  # $0.005 per template message
+    meta_cost_per_media_message: float = 0.010  # $0.010 per media message (example)
 
     # JWT Authentication
     jwt_secret: str = "change_this_in_production"
@@ -48,6 +61,10 @@ class Settings(BaseSettings):
 
     # CORS
     cors_origins: str = "http://localhost:3000,http://localhost:8000"
+    
+    # Azure Blob Storage
+    azure_storage_connection_string: str = ""
+    azure_storage_container_name: str = "techpath-ai-saas"
 
     @field_validator("cors_origins", mode="before")
     @classmethod
