@@ -6,10 +6,11 @@ export interface Contact {
   email?: string;
   avatar_url?: string;
   business_account_id?: string;
-  status: 'active' | 'inactive';
+  status: 'active' | 'inactive' | 'blocked';
   source?: 'imported' | 'chat' | 'manual';
   tags?: string[];
   list_ids?: number[];
+  blocked_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -59,12 +60,34 @@ export interface Message {
 // Message Template types
 export interface MessageTemplate {
   id: number;
+  user_id: number;
   name: string;
-  template_id: string;
-  content: string;
+  template_id?: string; // Legacy field
+  meta_template_id?: string; // Meta API template ID
+  waba_id?: string; // WhatsApp Business Account ID
   category: 'marketing' | 'utility' | 'authentication';
   language: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'DISABLED' | 'FLAGGED' | 'active' | 'inactive'; // Legacy statuses included
+  // Template structure
+  header_type?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | null;
+  header_content?: string | null;
+  body_text?: string;
+  footer_text?: string | null;
+  buttons?: {
+    type?: 'QUICK_REPLY' | 'CALL_TO_ACTION' | 'URL';
+    buttons?: Array<{
+      type?: string;
+      text?: string;
+      url?: string;
+      phone_number?: string;
+    }>;
+  } | null;
+  variables?: Record<string, string>; // Variable definitions and sample data
+  rejection_reason?: string | null;
+  // Legacy fields
+  content?: string; // Legacy field, use body_text instead
   created_at: string;
+  updated_at: string;
 }
 
 // WebSocket event types
@@ -249,6 +272,7 @@ export interface BulkMessageCampaign {
   user_id: number;
   name: string;
   template_id?: number;
+  template_variables?: Record<string, string>;
   target_contacts?: Record<string, any>;
   message_content: string;
   status: 'draft' | 'scheduled' | 'sending' | 'completed' | 'failed';
@@ -265,6 +289,7 @@ export interface BulkMessageCampaign {
 export interface BulkMessageCampaignCreate {
   name: string;
   template_id?: number;
+  template_variables?: Record<string, string>;
   target_contacts?: Record<string, any>;
   list_ids?: number[];
   tag_names?: string[];

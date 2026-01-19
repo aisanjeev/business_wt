@@ -9,6 +9,10 @@ import WhatsAppChat from './WhatsAppChat';
 import AdminDashboard from './AdminDashboard';
 import ContactsList from './ContactsList';
 import { MetaConnection, ContactImport, BulkMessaging, UsageDashboard } from './index';
+import TemplateList from './TemplateManagement/TemplateList';
+import TemplateCreator from './TemplateManagement/TemplateCreator';
+import TemplateEditor from './TemplateManagement/TemplateEditor';
+import { MessageTemplate } from '@/types';
 
 type ActivePage = 
   | 'overview'
@@ -16,6 +20,9 @@ type ActivePage =
   | 'contacts'
   | 'campaigns'
   | 'import'
+  | 'templates'
+  | 'template-create'
+  | 'template-edit'
   | 'usage'
   | 'settings'
   | 'admin';
@@ -30,6 +37,7 @@ const MainDashboard: React.FC<MainDashboardProps> = ({ children }) => {
   const [metaConnection, setMetaConnection] = useState<MetaAccountConnection | null>(null);
   const [connectionLoading, setConnectionLoading] = useState(true);
   const [navigateToContactId, setNavigateToContactId] = useState<number | null>(null);
+  const [editingTemplate, setEditingTemplate] = useState<MessageTemplate | null>(null);
   const { user, logout } = useAuthStore();
   const { selectConversation, conversations } = useConversationStore();
   const isAdmin = user?.role === 'admin' || (user as any)?.is_superuser;
@@ -92,10 +100,14 @@ const MainDashboard: React.FC<MainDashboardProps> = ({ children }) => {
 
   const isMetaConnected = metaConnection?.status === 'connected';
 
+  const handleNavigate = (page: string) => {
+    setActivePage(page as ActivePage);
+  };
+
   const renderContent = () => {
     switch (activePage) {
       case 'overview':
-        return <DashboardOverview onNavigate={setActivePage} />;
+        return <DashboardOverview onNavigate={handleNavigate} />;
       case 'whatsapp':
         // Check if Meta connection exists and is connected
         if (!connectionLoading && !isMetaConnected) {
@@ -128,6 +140,39 @@ const MainDashboard: React.FC<MainDashboardProps> = ({ children }) => {
         return <BulkMessaging onCampaignCreated={() => setActivePage('campaigns')} />;
       case 'import':
         return <ContactImport onImportComplete={() => setActivePage('contacts')} />;
+      case 'templates':
+        return (
+          <TemplateList
+            onCreateNew={() => setActivePage('template-create')}
+            onSelectTemplate={(template) => {
+              setEditingTemplate(template);
+              setActivePage('template-edit');
+            }}
+          />
+        );
+      case 'template-create':
+        return (
+          <TemplateCreator
+            onSuccess={() => setActivePage('templates')}
+            onCancel={() => setActivePage('templates')}
+          />
+        );
+      case 'template-edit':
+        return editingTemplate ? (
+          <TemplateEditor
+            template={editingTemplate}
+            onSuccess={() => {
+              setEditingTemplate(null);
+              setActivePage('templates');
+            }}
+            onCancel={() => {
+              setEditingTemplate(null);
+              setActivePage('templates');
+            }}
+          />
+        ) : (
+          <div className="p-6">Template not found. <button onClick={() => setActivePage('templates')} className="text-blue-600">Go back</button></div>
+        );
       case 'usage':
         return <UsageDashboard />;
       case 'settings':
@@ -135,7 +180,7 @@ const MainDashboard: React.FC<MainDashboardProps> = ({ children }) => {
       case 'admin':
         return <AdminDashboard />;
       default:
-        return <DashboardOverview onNavigate={setActivePage} />;
+        return <DashboardOverview onNavigate={handleNavigate} />;
     }
   };
 
@@ -272,6 +317,23 @@ const MainDashboard: React.FC<MainDashboardProps> = ({ children }) => {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                 </svg>
                 <span>Import Contacts</span>
+              </div>
+            </button>
+
+            {/* Templates */}
+            <button
+              onClick={() => setActivePage('templates')}
+              className={`w-full text-left px-4 py-2 rounded-lg transition-colors ${
+                activePage === 'templates' || activePage === 'template-create'
+                  ? 'bg-green-100 text-green-700 font-medium'
+                  : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span>Templates</span>
               </div>
             </button>
 

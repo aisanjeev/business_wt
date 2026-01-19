@@ -303,6 +303,7 @@ export const contactApi = {
     pageSize: number = 20,
     search?: string,
     source?: 'imported' | 'chat' | 'manual' | 'all',
+    status?: string,
     tags?: string
   ): Promise<ApiResponse<PaginatedResponse<Contact>>> {
     try {
@@ -315,6 +316,9 @@ export const contactApi = {
       }
       if (source && source !== 'all') {
         params.append('source', source);
+      }
+      if (status) {
+        params.append('status', status);
       }
       if (tags) {
         params.append('tags', tags);
@@ -411,11 +415,27 @@ export const contactApi = {
 
 export const templateApi = {
   /**
-   * Get all message templates
+   * Get all message templates with optional filters
    */
-  async getTemplates(): Promise<ApiResponse<MessageTemplate[]>> {
+  async getTemplates(params?: {
+    page?: number;
+    page_size?: number;
+    category?: string;
+    status?: string;
+    language?: string;
+    search?: string;
+  }): Promise<ApiResponse<PaginatedResponse<MessageTemplate>>> {
     try {
-      const response = await apiClient.get('/api/templates');
+      const queryParams = new URLSearchParams();
+      if (params?.page) queryParams.append('page', params.page.toString());
+      if (params?.page_size) queryParams.append('page_size', params.page_size.toString());
+      if (params?.category) queryParams.append('category', params.category);
+      if (params?.status) queryParams.append('status', params.status);
+      if (params?.language) queryParams.append('language', params.language);
+      if (params?.search) queryParams.append('search', params.search);
+      
+      const url = `/api/templates${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
+      const response = await apiClient.get(url);
       return { success: true, data: response.data };
     } catch (error) {
       return { success: false, error: handleApiError(error) };
@@ -428,6 +448,92 @@ export const templateApi = {
   async getTemplate(templateId: number): Promise<ApiResponse<MessageTemplate>> {
     try {
       const response = await apiClient.get(`/api/templates/${templateId}`);
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: handleApiError(error) };
+    }
+  },
+
+  /**
+   * Create a new template
+   */
+  async createTemplate(data: Partial<MessageTemplate>): Promise<ApiResponse<MessageTemplate>> {
+    try {
+      const response = await apiClient.post('/api/templates', data);
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: handleApiError(error) };
+    }
+  },
+
+  /**
+   * Update an existing template
+   */
+  async updateTemplate(templateId: number, data: Partial<MessageTemplate>): Promise<ApiResponse<MessageTemplate>> {
+    try {
+      const response = await apiClient.put(`/api/templates/${templateId}`, data);
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: handleApiError(error) };
+    }
+  },
+
+  /**
+   * Delete a template
+   */
+  async deleteTemplate(templateId: number): Promise<ApiResponse<{ message: string }>> {
+    try {
+      const response = await apiClient.delete(`/api/templates/${templateId}`);
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: handleApiError(error) };
+    }
+  },
+
+  /**
+   * Sync templates from Meta API
+   */
+  async syncTemplates(wabaId?: string): Promise<ApiResponse<{
+    success: boolean;
+    created: number;
+    updated: number;
+    errors: string[];
+    message?: string;
+  }>> {
+    try {
+      const url = wabaId ? `/api/templates/sync?waba_id=${wabaId}` : '/api/templates/sync';
+      const response = await apiClient.post(url);
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: handleApiError(error) };
+    }
+  },
+
+  /**
+   * Submit a template to Meta API for approval
+   */
+  async submitTemplate(templateId: number): Promise<ApiResponse<MessageTemplate>> {
+    try {
+      const response = await apiClient.post(`/api/templates/${templateId}/submit`);
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: handleApiError(error) };
+    }
+  },
+
+  /**
+   * Get template preview with sample variables
+   */
+  async previewTemplate(templateId: number, sampleVariables?: Record<string, string>): Promise<ApiResponse<{
+    header?: string;
+    body: string;
+    footer?: string;
+    buttons?: Array<any>;
+  }>> {
+    try {
+      const response = await apiClient.post(`/api/templates/${templateId}/preview`, {
+        sample_variables: sampleVariables || {},
+      });
       return { success: true, data: response.data };
     } catch (error) {
       return { success: false, error: handleApiError(error) };
