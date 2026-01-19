@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { useAuthStore } from '@/hooks/useAppState';
-import Dashboard from '@/components/Dashboard';
+import MainDashboard from '@/components/MainDashboard';
 import LoginPage from '@/components/LoginPage';
 
 // Custom hook to handle hydration
@@ -36,5 +36,5 @@ export default function Home() {
   }
 
   // Show dashboard if authenticated
-  return <Dashboard />;
+  return <MainDashboard />;
 }

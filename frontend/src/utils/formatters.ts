@@ -131,3 +131,36 @@ export function stringToColor(str: string): string {
   
   return colors[Math.abs(hash) % colors.length];
 }
+
+/**
+ * Check if a contact is considered "online" based on recent inbound message activity
+ * A contact is considered online if their last inbound message was within the threshold
+ * 
+ * @param lastMessageAt - ISO timestamp of last message
+ * @param lastMessageSenderType - "inbound" or "outbound" 
+ * @param thresholdMinutes - Minutes threshold for considering someone online (default: 5)
+ * @returns true if contact appears online
+ */
+export function isContactOnline(
+  lastMessageAt: string | null | undefined,
+  lastMessageSenderType: string | null | undefined,
+  thresholdMinutes: number = 5
+): boolean {
+  // If no last message, not online
+  if (!lastMessageAt) return false;
+  
+  // Only consider inbound messages (messages FROM the contact)
+  // Outbound messages (messages TO the contact) don't indicate they're online
+  if (lastMessageSenderType !== 'inbound') return false;
+  
+  try {
+    const lastMessageDate = parseISO(lastMessageAt);
+    const now = new Date();
+    const diffMinutes = (now.getTime() - lastMessageDate.getTime()) / (1000 * 60);
+    
+    // Contact is "online" if last inbound message was within threshold
+    return diffMinutes <= thresholdMinutes;
+  } catch {
+    return false;
+  }
+}
