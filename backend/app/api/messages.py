@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.models import Contact, Conversation, Message, User
+from app.models import Contact, Conversation, Message, MetaAccountConnection, User
 from app.schemas import (
     ErrorResponse,
     MessageResponse,
@@ -21,7 +21,7 @@ from app.schemas import (
 )
 from app.services.auth import get_current_user
 from app.services.media import delete_media
-from app.services.whatsapp import WhatsAppAPIError, whatsapp_client
+from app.services.whatsapp import WhatsAppAPIError, get_whatsapp_client_for_user
 from app.utils.constants import MessageStatus, SenderType
 from app.utils.logger import get_logger
 from app.utils.phone import normalize_phone_number, get_phone_number_variants
@@ -226,6 +226,9 @@ async def send_message(
         )
     
     phone_number = conversation.contact.phone_number
+    
+    # Get WhatsApp client configured for this user
+    whatsapp_client = await get_whatsapp_client_for_user(db, current_user.id)
     
     # #region agent log
     import json
@@ -477,6 +480,9 @@ async def send_template_message(
         )
     
     phone_number = conversation.contact.phone_number
+    
+    # Get WhatsApp client configured for this user
+    whatsapp_client = await get_whatsapp_client_for_user(db, current_user.id)
     
     # Create message record
     message = Message(
@@ -839,6 +845,9 @@ async def send_message_by_phone(
     
     db.add(message)
     await db.flush()
+    
+    # Get WhatsApp client configured for this user
+    whatsapp_client = await get_whatsapp_client_for_user(db, current_user.id)
     
     try:
         # Send message via WhatsApp API (use normalized phone number)

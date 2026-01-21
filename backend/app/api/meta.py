@@ -338,6 +338,32 @@ async def complete_connection(
         HTTPException: If connection creation/update fails.
     """
     try:
+        # #region agent log
+        import json
+        from pathlib import Path
+        DEBUG_LOG_PATH = Path(__file__).parent.parent.parent / ".cursor" / "debug.log"
+        try:
+            DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "location": "meta.py:complete_connection:entry",
+                    "message": "Connection completion request received",
+                    "data": {
+                        "user_id": current_user.id,
+                        "phone_number_id": complete_request.phone_number_id,
+                        "business_account_id": complete_request.business_account_id,
+                        "has_access_token": bool(complete_request.access_token),
+                        "access_token_prefix": complete_request.access_token[:20] + "..." if complete_request.access_token else None
+                    },
+                    "sessionId": "debug-session",
+                    "runId": "debug-run",
+                    "hypothesisId": "A"
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         # Encrypt tokens (simplified - use proper encryption in production)
         encrypted_access_token = complete_request.access_token  # TODO: Implement proper encryption
         encrypted_refresh_token = None  # TODO: Store refresh token if available
@@ -350,6 +376,28 @@ async def complete_connection(
                 phone_numbers = await meta_oauth_service.get_phone_numbers(
                     complete_request.business_account_id, complete_request.access_token
                 )
+                
+                # #region agent log
+                try:
+                    with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+                        f.write(json.dumps({
+                            "timestamp": int(datetime.now().timestamp() * 1000),
+                            "location": "meta.py:complete_connection:phone_numbers_fetched",
+                            "message": "Phone numbers fetched from Meta API",
+                            "data": {
+                                "business_account_id": complete_request.business_account_id,
+                                "phone_numbers_count": len(phone_numbers),
+                                "phone_numbers": [{"id": pn.get("id"), "display_phone_number": pn.get("display_phone_number")} for pn in phone_numbers],
+                                "requested_phone_number_id": complete_request.phone_number_id
+                            },
+                            "sessionId": "debug-session",
+                            "runId": "debug-run",
+                            "hypothesisId": "B"
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+                
                 for pn in phone_numbers:
                     if pn.get("id") == complete_request.phone_number_id:
                         business_phone_number = pn.get("display_phone_number") or pn.get("verified_name")
@@ -374,6 +422,26 @@ async def complete_connection(
             existing_connection.connected_at = datetime.now(timezone.utc)
             existing_connection.updated_at = datetime.now(timezone.utc)
             
+            # #region agent log
+            try:
+                with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "timestamp": int(datetime.now().timestamp() * 1000),
+                        "location": "meta.py:complete_connection:updating",
+                        "message": "Updating existing Meta connection",
+                        "data": {
+                            "user_id": current_user.id,
+                            "phone_number_id": existing_connection.phone_number_id,
+                            "meta_business_account_id": existing_connection.meta_business_account_id
+                        },
+                        "sessionId": "debug-session",
+                        "runId": "debug-run",
+                        "hypothesisId": "C"
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
             await db.commit()
             await db.refresh(existing_connection)
             
@@ -391,6 +459,26 @@ async def complete_connection(
                 status="connected",
                 connected_at=datetime.now(timezone.utc),
             )
+            
+            # #region agent log
+            try:
+                with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "timestamp": int(datetime.now().timestamp() * 1000),
+                        "location": "meta.py:complete_connection:creating",
+                        "message": "Creating new Meta connection",
+                        "data": {
+                            "user_id": current_user.id,
+                            "phone_number_id": connection.phone_number_id,
+                            "meta_business_account_id": connection.meta_business_account_id
+                        },
+                        "sessionId": "debug-session",
+                        "runId": "debug-run",
+                        "hypothesisId": "C"
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
             
             db.add(connection)
             await db.commit()

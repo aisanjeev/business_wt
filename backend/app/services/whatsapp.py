@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.utils.constants import MessageType
@@ -25,11 +27,16 @@ class WhatsAppAPIError(Exception):
 class WhatsAppClient:
     """Client for WhatsApp Cloud API."""
     
-    def __init__(self):
-        """Initialize WhatsApp API client."""
+    def __init__(self, phone_number_id: Optional[str] = None, access_token: Optional[str] = None):
+        """Initialize WhatsApp API client.
+        
+        Args:
+            phone_number_id: WhatsApp phone number ID. If None, uses global settings.
+            access_token: Access token. If None, uses global settings.
+        """
         self.base_url = settings.whatsapp_api_base_url
-        self.phone_number_id = settings.whatsapp_phone_number_id
-        self.api_token = settings.whatsapp_api_token
+        self.phone_number_id = phone_number_id or settings.whatsapp_phone_number_id
+        self.api_token = access_token or settings.whatsapp_api_token
         self.api_version = settings.whatsapp_api_version
         
         self.headers = {
@@ -37,11 +44,53 @@ class WhatsAppClient:
             "Content-Type": "application/json",
         }
     
+    @classmethod
+    def for_user(cls, phone_number_id: str, access_token: str) -> "WhatsAppClient":
+        """Create a WhatsApp client instance for a specific user's account.
+        
+        Args:
+            phone_number_id: User's WhatsApp phone number ID.
+            access_token: User's access token.
+        
+        Returns:
+            WhatsAppClient instance configured for the user.
+        """
+        return cls(phone_number_id=phone_number_id, access_token=access_token)
+    
     @property
     def messages_url(self) -> str:
         """Get the messages endpoint URL."""
         # base_url already includes api_version, so don't add it again
-        return f"{self.base_url}/{self.phone_number_id}/messages"
+        url = f"{self.base_url}/{self.phone_number_id}/messages"
+        
+        # #region agent log
+        import json
+        from pathlib import Path
+        from datetime import datetime
+        DEBUG_LOG_PATH = Path(__file__).parent.parent.parent / ".cursor" / "debug.log"
+        try:
+            DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "location": "whatsapp.py:WhatsAppClient:messages_url",
+                    "message": "Constructing messages API URL",
+                    "data": {
+                        "base_url": self.base_url,
+                        "phone_number_id": self.phone_number_id,
+                        "phone_number_id_type": type(self.phone_number_id).__name__,
+                        "constructed_url": url,
+                        "api_version": self.api_version
+                    },
+                    "sessionId": "debug-session",
+                    "runId": "debug-run",
+                    "hypothesisId": "D"
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        return url
     
     @property
     def media_url(self) -> str:
@@ -117,6 +166,33 @@ class WhatsAppClient:
         Returns:
             API response with message ID.
         """
+        # #region agent log
+        import json
+        from pathlib import Path
+        from datetime import datetime
+        DEBUG_LOG_PATH = Path(__file__).parent.parent.parent / ".cursor" / "debug.log"
+        try:
+            DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "location": "whatsapp.py:WhatsAppClient:send_text_message:entry",
+                    "message": "Sending text message - before API call",
+                    "data": {
+                        "messages_url": self.messages_url,
+                        "phone_number_id": self.phone_number_id,
+                        "to": to,
+                        "access_token_prefix": self.api_token[:20] + "..." if self.api_token else None,
+                        "access_token_length": len(self.api_token) if self.api_token else 0
+                    },
+                    "sessionId": "debug-session",
+                    "runId": "debug-run",
+                    "hypothesisId": "E"
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
         payload = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -533,5 +609,115 @@ class WhatsAppClient:
             return media_id
 
 
-# Singleton instance
+# Singleton instance (uses global settings)
 whatsapp_client = WhatsAppClient()
+
+
+async def get_whatsapp_client_for_user(
+    db: AsyncSession,
+    user_id: int,
+) -> WhatsAppClient:
+    """Get WhatsApp client configured for a specific user.
+    
+    If the user has a connected Meta account, returns a client using their credentials.
+    Otherwise, returns the global default client.
+    
+    Args:
+        db: Database session.
+        user_id: User ID.
+    
+    Returns:
+        WhatsAppClient instance configured for the user.
+    """
+    from app.models import MetaAccountConnection
+    
+    # Try to get user's Meta connection
+    from sqlalchemy import select
+    result = await db.execute(
+        select(MetaAccountConnection).where(
+            MetaAccountConnection.user_id == user_id,
+            MetaAccountConnection.status == "connected"
+        )
+    )
+    meta_connection = result.scalar_one_or_none()
+    
+    # #region agent log
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    DEBUG_LOG_PATH = Path(__file__).parent.parent.parent / ".cursor" / "debug.log"
+    try:
+        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "timestamp": int(datetime.now().timestamp() * 1000),
+                "location": "whatsapp.py:get_whatsapp_client_for_user:after_query",
+                "message": "Meta connection query result",
+                "data": {
+                    "user_id": user_id,
+                    "connection_found": meta_connection is not None,
+                    "phone_number_id": str(meta_connection.phone_number_id) if meta_connection and meta_connection.phone_number_id else None,
+                    "meta_business_account_id": str(meta_connection.meta_business_account_id) if meta_connection and meta_connection.meta_business_account_id else None,
+                    "has_access_token": bool(meta_connection.access_token if meta_connection else False),
+                    "access_token_prefix": (meta_connection.access_token[:20] + "...") if meta_connection and meta_connection.access_token else None,
+                    "status": meta_connection.status if meta_connection else None
+                },
+                "sessionId": "debug-session",
+                "runId": "debug-run",
+                "hypothesisId": "A"
+            }) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    
+    if meta_connection and meta_connection.phone_number_id and meta_connection.access_token:
+        # Use user's credentials (tokens are currently stored unencrypted)
+        logger.info(f"Using user {user_id}'s WhatsApp account (phone_number_id: {meta_connection.phone_number_id})")
+        
+        # #region agent log
+        try:
+            with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "location": "whatsapp.py:get_whatsapp_client_for_user:creating_client",
+                    "message": "Creating WhatsAppClient with user credentials",
+                    "data": {
+                        "user_id": user_id,
+                        "phone_number_id": str(meta_connection.phone_number_id),
+                        "phone_number_id_length": len(str(meta_connection.phone_number_id)),
+                        "access_token_length": len(meta_connection.access_token) if meta_connection.access_token else 0,
+                        "meta_business_account_id": str(meta_connection.meta_business_account_id) if meta_connection.meta_business_account_id else None
+                    },
+                    "sessionId": "debug-session",
+                    "runId": "debug-run",
+                    "hypothesisId": "B"
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        return WhatsAppClient.for_user(
+            phone_number_id=meta_connection.phone_number_id,
+            access_token=meta_connection.access_token
+        )
+    else:
+        # Fall back to global default
+        logger.info(f"Using default WhatsApp account for user {user_id}")
+        
+        # #region agent log
+        try:
+            with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "location": "whatsapp.py:get_whatsapp_client_for_user:fallback",
+                    "message": "Falling back to default WhatsApp client",
+                    "data": {"user_id": user_id, "reason": "No connection or missing credentials"},
+                    "sessionId": "debug-session",
+                    "runId": "debug-run",
+                    "hypothesisId": "C"
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        
+        return whatsapp_client

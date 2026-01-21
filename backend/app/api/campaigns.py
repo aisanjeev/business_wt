@@ -20,7 +20,6 @@ from app.schemas import (
 )
 from app.services.auth import get_current_user
 from app.services.bulk_messaging import bulk_messaging_service
-from app.services.whatsapp import whatsapp_client
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -440,6 +439,10 @@ async def _run_campaign(campaign_id: int, user_id: int) -> None:
                 await db.commit()
                 logger.warning(f"Campaign {campaign_id} has no contacts")
                 return
+            
+            # Get WhatsApp client configured for this user
+            from app.services.whatsapp import get_whatsapp_client_for_user
+            whatsapp_client = await get_whatsapp_client_for_user(db, user_id)
             
             # Send messages
             sent_count, failed_count = await bulk_messaging_service.send_campaign_messages(
