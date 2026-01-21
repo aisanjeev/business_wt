@@ -1,6 +1,7 @@
 """Pydantic schemas for request/response validation."""
 
 from datetime import datetime
+from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -39,6 +40,7 @@ class ContactBase(BaseSchema):
     avatar_url: Optional[str] = Field(None, max_length=512)
     business_account_id: Optional[str] = Field(None, max_length=100)
     status: str = Field(default="active", max_length=20)
+    source: str = Field(default="manual", max_length=20)  # "imported", "chat", "manual"
 
 
 class ContactCreate(ContactBase):
@@ -53,12 +55,16 @@ class ContactUpdate(BaseSchema):
     email: Optional[EmailStr] = None
     avatar_url: Optional[str] = Field(None, max_length=512)
     status: Optional[str] = Field(None, max_length=20)
+    source: Optional[str] = Field(None, max_length=20)
 
 
 class ContactResponse(ContactBase):
     """Schema for contact response."""
     
     id: int
+    tags: Optional[list[str]] = Field(default_factory=list)
+    list_ids: Optional[list[int]] = Field(default_factory=list)  # Populated from relationships
+    blocked_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -125,6 +131,7 @@ class ConversationListItem(BaseSchema):
     last_message: Optional[str] = None
     last_message_at: Optional[datetime] = None
     last_message_type: str = "text"
+    last_message_sender_type: Optional[str] = None  # "inbound" or "outbound"
     unread_count: int = 0
     is_active: bool = True
 
@@ -156,6 +163,17 @@ class MessageSend(BaseSchema):
     message_type: str = "text"
     template_name: Optional[str] = None
     template_variables: Optional[dict] = None
+    media_url: Optional[str] = None
+    media_mime_type: Optional[str] = None
+
+
+class MessageSendByPhone(BaseSchema):
+    """Schema for sending a message to WhatsApp by phone number (creates/finds contact and conversation)."""
+    
+    phone_number: str = Field(..., min_length=10, max_length=20)
+    content: str
+    message_type: str = "text"
+    contact_name: Optional[str] = Field(None, max_length=255)
 
 
 class MessageResponse(MessageBase):
@@ -189,36 +207,86 @@ class TemplateBase(BaseSchema):
     """Base template schema."""
     
     name: str = Field(..., max_length=100)
-    content: str
-    category: str = Field(default="utility", max_length=50)
+    category: str = Field(default="utility", max_length=50)  # marketing, utility, authentication
     language: str = Field(default="en", max_length=10)
-    variables: Optional[dict] = Field(default_factory=dict)
+    # Template structure
+    header_type: Optional[str] = Field(None, max_length=20)  # TEXT, IMAGE, VIDEO, DOCUMENT, None
+    header_content: Optional[str] = None  # Header text or media URL
+    body_text: str = Field(..., max_length=1024)  # Main message body with variables {{1}}, {{2}}
+    footer_text: Optional[str] = Field(None, max_length=60)  # Footer text
+    buttons: Optional[dict] = None  # JSON structure for buttons
+    # Meta API fields
+    waba_id: Optional[str] = Field(None, max_length=100)  # WhatsApp Business Account ID
+    variables: Optional[dict] = Field(default_factory=dict)  # Variable definitions and sample data
+    # Legacy fields (for backward compatibility)
+    content: Optional[str] = None  # Legacy field, use body_text instead
 
 
 class TemplateCreate(TemplateBase):
     """Schema for creating a template."""
     
-    template_id: Optional[str] = Field(None, max_length=100)
+    # Override body_text to be optional for drafts
+    body_text: Optional[str] = Field(None, max_length=1024)
+    # Optional fields for draft creation
+    status: Optional[str] = Field(default="PENDING", max_length=20)
 
 
 class TemplateUpdate(BaseSchema):
     """Schema for updating a template."""
     
     name: Optional[str] = Field(None, max_length=100)
-    content: Optional[str] = None
     category: Optional[str] = Field(None, max_length=50)
+    language: Optional[str] = Field(None, max_length=10)
     status: Optional[str] = Field(None, max_length=20)
+    # Template structure
+    header_type: Optional[str] = Field(None, max_length=20)
+    header_content: Optional[str] = None
+    body_text: Optional[str] = Field(None, max_length=1024)
+    footer_text: Optional[str] = Field(None, max_length=60)
+    buttons: Optional[dict] = None
     variables: Optional[dict] = None
+    # Legacy field
+    content: Optional[str] = None
 
 
 class TemplateResponse(TemplateBase):
     """Schema for template response."""
     
     id: int
-    template_id: Optional[str] = None
-    status: str
+    user_id: int
+    # Meta API fields
+    meta_template_id: Optional[str] = None  # Meta API template ID
+    template_id: Optional[str] = None  # Legacy field
+    waba_id: Optional[str] = None
+    status: str  # PENDING, APPROVED, REJECTED, DISABLED, FLAGGED
+    rejection_reason: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+
+class TemplatePreviewRequest(BaseSchema):
+    """Schema for template preview request."""
+    
+    sample_variables: Optional[dict] = Field(default_factory=dict)  # Sample data for variables
+
+
+class TemplatePreviewResponse(BaseSchema):
+    """Schema for template preview response."""
+    
+    header: Optional[str] = None
+    body: str
+    footer: Optional[str] = None
+    buttons: Optional[list] = None
+
+
+class TemplateSyncResponse(BaseSchema):
+    """Schema for template sync response."""
+    
+    success: bool
+    created: int = 0
+    updated: int = 0
+    errors: list[str] = Field(default_factory=list)
+    message: Optional[str] = None
 
 
 # ============================================================================
@@ -237,6 +305,13 @@ class UserCreate(UserBase):
     """Schema for creating a user."""
     
     password: str = Field(..., min_length=8)
+
+
+class AdminUserCreate(UserCreate):
+    """Schema for admin creating a user."""
+    
+    is_superuser: bool = False
+    is_active: bool = True
 
 
 class UserUpdate(BaseSchema):
@@ -421,6 +496,428 @@ class WSStatusUpdate(BaseSchema):
     message_id: str
     status: str
     conversation_id: int
+
+
+# ============================================================================
+# Contact List Folder Schemas
+# ============================================================================
+
+class ContactListFolderBase(BaseSchema):
+    """Base contact list folder schema."""
+    
+    name: str = Field(..., max_length=255)
+    description: Optional[str] = None
+    color: Optional[str] = Field(None, max_length=7, pattern="^#[0-9A-Fa-f]{6}$")
+    parent_folder_id: Optional[int] = None
+
+
+class ContactListFolderCreate(ContactListFolderBase):
+    """Schema for creating a contact list folder."""
+    pass
+
+
+class ContactListFolderUpdate(BaseSchema):
+    """Schema for updating a contact list folder."""
+    
+    name: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = None
+    color: Optional[str] = Field(None, max_length=7, pattern="^#[0-9A-Fa-f]{6}$")
+    parent_folder_id: Optional[int] = None
+
+
+class ContactListFolderResponse(ContactListFolderBase):
+    """Schema for contact list folder response."""
+    
+    id: int
+    user_id: int
+    lists_count: Optional[int] = 0  # Number of lists in this folder
+    created_at: datetime
+    updated_at: datetime
+
+
+class MoveFolderRequest(BaseSchema):
+    """Schema for moving a folder to another folder."""
+    
+    parent_folder_id: Optional[int] = None  # None means move to root
+
+
+# ============================================================================
+# Contact List Schemas
+# ============================================================================
+
+class ContactListBase(BaseSchema):
+    """Base contact list schema."""
+    
+    name: str = Field(..., max_length=255)
+    description: Optional[str] = None
+    color: Optional[str] = Field(None, max_length=7, pattern="^#[0-9A-Fa-f]{6}$")
+    folder_id: Optional[int] = None
+
+
+class ContactListCreate(ContactListBase):
+    """Schema for creating a contact list."""
+    pass
+
+
+class ContactListUpdate(BaseSchema):
+    """Schema for updating a contact list."""
+    
+    name: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = None
+    color: Optional[str] = Field(None, max_length=7, pattern="^#[0-9A-Fa-f]{6}$")
+    folder_id: Optional[int] = None
+
+
+class ContactListResponse(ContactListBase):
+    """Schema for contact list response."""
+    
+    id: int
+    user_id: int
+    contacts_count: Optional[int] = 0  # Number of contacts in this list
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContactListMembershipResponse(BaseSchema):
+    """Schema for contact list membership response."""
+    
+    contact_list_id: int
+    contact_id: int
+    added_at: datetime
+
+
+class MoveListRequest(BaseSchema):
+    """Schema for moving a list to another folder."""
+    
+    folder_id: Optional[int] = None  # None means move to root
+
+
+# ============================================================================
+# Meta Account Connection Schemas
+# ============================================================================
+
+class MetaAccountConnectionBase(BaseSchema):
+    """Base Meta account connection schema."""
+    
+    meta_business_account_id: str = Field(..., max_length=100)
+    phone_number_id: str = Field(..., max_length=100)
+    business_phone_number: Optional[str] = Field(None, max_length=20)
+    status: str = Field(default="pending_verification", max_length=20)
+    business_verification_status: str = Field(default="unverified", max_length=20)
+    webhook_url: Optional[str] = Field(None, max_length=512)
+    usage_tracking_enabled: bool = True
+
+
+class MetaAccountConnectionCreate(MetaAccountConnectionBase):
+    """Schema for creating Meta account connection."""
+    
+    access_token: str
+    refresh_token: Optional[str] = None
+
+
+class MetaAccountConnectionUpdate(BaseSchema):
+    """Schema for updating Meta account connection."""
+    
+    status: Optional[str] = Field(None, max_length=20)
+    business_verification_status: Optional[str] = Field(None, max_length=20)
+    webhook_url: Optional[str] = Field(None, max_length=512)
+    usage_tracking_enabled: Optional[bool] = None
+
+
+class MetaAccountConnectionResponse(MetaAccountConnectionBase):
+    """Schema for Meta account connection response."""
+    
+    id: int
+    user_id: int
+    connected_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+# OAuth Exchange Schemas
+class OAuthExchangeRequest(BaseSchema):
+    """Schema for OAuth code exchange request."""
+    
+    code: str = Field(..., description="Authorization code from Meta")
+
+
+class BusinessAccountInfo(BaseSchema):
+    """Schema for Meta Business Account information."""
+    
+    id: str
+    name: Optional[str] = None
+    timezone_id: Optional[str] = None
+    primary_page_id: Optional[str] = None
+
+
+class PhoneNumberInfo(BaseSchema):
+    """Schema for WhatsApp phone number information."""
+    
+    id: str
+    display_phone_number: Optional[str] = None
+    verified_name: Optional[str] = None
+    code_verification_status: Optional[str] = None
+    eligibility_for_api_business_global_search: Optional[str] = None
+
+
+class OAuthExchangeResponse(BaseSchema):
+    """Schema for OAuth exchange response."""
+    
+    access_token: str
+    expires_in: int
+    business_accounts: list[BusinessAccountInfo]
+    phone_numbers: list[PhoneNumberInfo]  # Phone numbers for the first business account
+
+
+class ConnectionCompleteRequest(BaseSchema):
+    """Schema for completing Meta connection with selected phone number."""
+    
+    business_account_id: str = Field(..., description="Meta Business Account ID")
+    phone_number_id: str = Field(..., description="WhatsApp Phone Number ID")
+    access_token: str = Field(..., description="Access token from OAuth exchange")
+    business_phone_number: Optional[str] = Field(None, description="Display phone number")
+
+
+# ============================================================================
+# API Usage Schemas
+# ============================================================================
+
+class ApiUsageBase(BaseSchema):
+    """Base API usage schema."""
+    
+    meta_phone_number_id: Optional[str] = Field(None, max_length=100)
+    message_type: str = Field(..., max_length=20)
+    api_endpoint: str = Field(..., max_length=255)
+    response_status: int
+    estimated_cost: Optional[str] = Field(None, max_length=20)
+    request_id: Optional[str] = Field(None, max_length=100)
+
+
+class ApiUsageResponse(ApiUsageBase):
+    """Schema for API usage response."""
+    
+    id: int
+    user_id: int
+    timestamp: datetime
+
+
+class UsageStatsResponse(BaseSchema):
+    """Schema for usage statistics response."""
+    
+    user_id: int
+    total_messages: int
+    total_api_calls: int
+    total_cost: float
+    period_start: datetime
+    period_end: datetime
+    breakdown_by_type: dict[str, int] = Field(default_factory=dict)
+
+
+class UsageCostResponse(BaseSchema):
+    """Schema for usage cost response."""
+    
+    user_id: int
+    total_cost: float
+    period_start: datetime
+    period_end: datetime
+    cost_breakdown: dict[str, float] = Field(default_factory=dict)  # by message_type
+
+
+# ============================================================================
+# Contact List Folder Schemas
+# ============================================================================
+
+class ContactListFolderBase(BaseSchema):
+    """Base contact list folder schema."""
+    
+    name: str = Field(..., max_length=255)
+    description: Optional[str] = None
+    color: Optional[str] = Field(None, max_length=7)
+    parent_folder_id: Optional[int] = None
+
+
+class ContactListFolderCreate(ContactListFolderBase):
+    """Schema for creating a contact list folder."""
+    pass
+
+
+class ContactListFolderUpdate(BaseSchema):
+    """Schema for updating a contact list folder."""
+    
+    name: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = None
+    color: Optional[str] = Field(None, max_length=7)
+    parent_folder_id: Optional[int] = None
+
+
+class ContactListFolderResponse(ContactListFolderBase):
+    """Schema for contact list folder response."""
+    
+    id: int
+    user_id: int
+    lists_count: Optional[int] = 0  # Number of lists in this folder
+    created_at: datetime
+    updated_at: datetime
+
+
+class MoveFolderRequest(BaseSchema):
+    """Schema for moving a folder to another folder."""
+    
+    parent_folder_id: Optional[int] = None  # None means move to root
+
+
+# ============================================================================
+# Contact List Schemas
+# ============================================================================
+
+class ContactListBase(BaseSchema):
+    """Base contact list schema."""
+    
+    name: str = Field(..., max_length=255)
+    description: Optional[str] = None
+    color: Optional[str] = Field(None, max_length=7)
+    folder_id: Optional[int] = None
+
+
+class ContactListCreate(ContactListBase):
+    """Schema for creating a contact list."""
+    pass
+
+
+class ContactListUpdate(BaseSchema):
+    """Schema for updating a contact list."""
+    
+    name: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = None
+    color: Optional[str] = Field(None, max_length=7)
+    folder_id: Optional[int] = None
+
+
+class ContactListResponse(ContactListBase):
+    """Schema for contact list response."""
+    
+    id: int
+    user_id: int
+    contacts_count: Optional[int] = 0  # Number of contacts in this list
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContactListMembershipResponse(BaseSchema):
+    """Schema for contact list membership response."""
+    
+    contact_list_id: int
+    contact_id: int
+    added_at: datetime
+
+
+class MoveListRequest(BaseSchema):
+    """Schema for moving a list to another folder."""
+    
+    folder_id: Optional[int] = None  # None means move to root
+
+
+# ============================================================================
+# Contact Import Schemas
+# ============================================================================
+
+class ContactImportBase(BaseSchema):
+    """Base contact import schema."""
+    
+    filename: str = Field(..., max_length=255)
+    file_format: str = Field(..., max_length=10)  # csv, excel, json
+
+
+class ContactImportCreate(ContactImportBase):
+    """Schema for creating contact import."""
+    
+    contact_list_id: Optional[int] = Field(None, description="Contact list to import contacts into")
+
+
+class ContactImportResponse(ContactImportBase):
+    """Schema for contact import response."""
+    
+    id: int
+    user_id: int
+    status: str
+    total_rows: int
+    successful_rows: int
+    failed_rows: int
+    error_log: Optional[dict] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class ContactImportStatus(BaseSchema):
+    """Schema for contact import status check."""
+    
+    id: int
+    status: str
+    total_rows: int
+    successful_rows: int
+    failed_rows: int
+    progress_percentage: float
+
+
+# ============================================================================
+# Bulk Message Campaign Schemas
+# ============================================================================
+
+class BulkMessageCampaignBase(BaseSchema):
+    """Base bulk message campaign schema."""
+    
+    name: str = Field(..., max_length=255)
+    template_id: Optional[int] = None
+    template_variables: Optional[dict] = None  # Template variable values
+    target_contacts: Optional[dict] = None  # Filter criteria or contact list
+    message_content: str
+
+
+class BulkMessageCampaignCreate(BulkMessageCampaignBase):
+    """Schema for creating bulk message campaign."""
+    
+    scheduled_at: Optional[datetime] = None
+    list_ids: Optional[list[int]] = Field(None, description="Contact list IDs to target")
+    tag_names: Optional[list[str]] = Field(None, description="Tag names to filter contacts by")
+    contact_ids: Optional[list[int]] = Field(None, description="Direct contact IDs (optional)")
+
+
+class BulkMessageCampaignUpdate(BaseSchema):
+    """Schema for updating bulk message campaign."""
+    
+    name: Optional[str] = Field(None, max_length=255)
+    status: Optional[str] = Field(None, max_length=20)
+    message_content: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+
+
+class BulkMessageCampaignResponse(BulkMessageCampaignBase):
+    """Schema for bulk message campaign response."""
+    
+    id: int
+    user_id: int
+    status: str
+    total_recipients: int
+    sent_count: int
+    failed_count: int
+    scheduled_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CampaignStatusResponse(BaseSchema):
+    """Schema for campaign status response."""
+    
+    id: int
+    status: str
+    total_recipients: int
+    sent_count: int
+    failed_count: int
+    progress_percentage: float
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
 
 # ============================================================================

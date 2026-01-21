@@ -3,11 +3,11 @@
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_context
-from app.models import Contact, Conversation, Message
+from app.models import Contact, Conversation, Message, MetaAccountConnection
 from app.schemas import (
     MessageResponse,
     WhatsAppEntry,
@@ -20,6 +20,7 @@ from app.schemas import (
 from app.services.whatsapp import whatsapp_client
 from app.utils.constants import MessageStatus, MessageType, SenderType
 from app.utils.logger import get_logger
+from app.utils.phone import normalize_phone_number, get_phone_number_variants
 
 logger = get_logger(__name__)
 
@@ -67,6 +68,26 @@ class MessageProcessor:
             
             value = change.value
             
+            # Extract phone_number_id from metadata to determine user
+            phone_number_id = value.metadata.phone_number_id if value.metadata else None
+            user_id = None
+            
+            if phone_number_id:
+                # Look up user by phone_number_id
+                async with get_db_context() as db:
+                    result = await db.execute(
+                        select(MetaAccountConnection).where(
+                            MetaAccountConnection.phone_number_id == phone_number_id,
+                            MetaAccountConnection.status == "connected"
+                        )
+                    )
+                    connection = result.scalar_one_or_none()
+                    if connection:
+                        user_id = connection.user_id
+                        logger.debug(f"Determined user_id {user_id} from phone_number_id {phone_number_id}")
+                    else:
+                        logger.warning(f"No MetaAccountConnection found for phone_number_id {phone_number_id}")
+            
             # Process incoming messages
             if value.messages:
                 for message in value.messages:
@@ -78,25 +99,31 @@ class MessageProcessor:
                                 contact_info = contact
                                 break
                     
-                    await self._process_message(message, contact_info)
+                    await self._process_message(message, contact_info, user_id=user_id)
             
             # Process status updates
             if value.statuses:
                 for status in value.statuses:
-                    await self._process_status_update(status)
+                    await self._process_status_update(status, user_id=user_id)
     
     async def _process_message(
         self,
         message: WhatsAppMessage,
         contact_info: Optional[Any] = None,
+        user_id: Optional[int] = None,
     ) -> None:
         """Process an incoming WhatsApp message.
         
         Args:
             message: The incoming message.
             contact_info: Optional contact information.
+            user_id: User ID from MetaAccountConnection (determined from webhook metadata).
         """
         logger.info(f"Processing message {message.id} from {message.from_}")
+        
+        if not user_id:
+            logger.error("Cannot process message: user_id not determined from webhook metadata")
+            return
         
         async with get_db_context() as db:
             # Get or create contact
@@ -104,13 +131,14 @@ class MessageProcessor:
                 db,
                 phone_number=message.from_,
                 name=contact_info.profile.get("name") if contact_info and contact_info.profile else None,
+                user_id=user_id,
             )
             
             # Get or create conversation
-            conversation = await self._get_or_create_conversation(db, contact.id)
+            conversation = await self._get_or_create_conversation(db, contact.id, user_id=user_id)
             
             # Extract message content based on type
-            content, media_url, media_mime_type, media_filename = await self._extract_message_content(message)
+            content, media_url, media_mime_type, media_filename = await self._extract_message_content(message, user_id=user_id)
             
             # Create message record
             timestamp = datetime.fromtimestamp(int(message.timestamp), tz=timezone.utc)
@@ -142,11 +170,16 @@ class MessageProcessor:
             # Broadcast to WebSocket clients
             await self._broadcast_new_message(db_message, conversation.id)
     
-    async def _process_status_update(self, status: WhatsAppStatus) -> None:
+    async def _process_status_update(
+        self,
+        status: WhatsAppStatus,
+        user_id: Optional[int] = None,
+    ) -> None:
         """Process a message status update.
         
         Args:
             status: The status update.
+            user_id: User ID (optional, for future use).
         """
         logger.info(f"Processing status update for message {status.id}: {status.status}")
         
@@ -199,6 +232,7 @@ class MessageProcessor:
         db: AsyncSession,
         phone_number: str,
         name: Optional[str] = None,
+        user_id: Optional[int] = None,
     ) -> Contact:
         """Get existing contact or create new one.
         
@@ -206,50 +240,77 @@ class MessageProcessor:
             db: Database session.
             phone_number: Contact phone number.
             name: Optional contact name.
+            user_id: User ID for multi-tenancy.
         
         Returns:
             Contact instance.
         """
+        if not user_id:
+            raise ValueError("user_id is required for multi-tenancy")
+        
+        # Normalize phone number
+        normalized_phone = normalize_phone_number(phone_number)
+        phone_variants = get_phone_number_variants(normalized_phone)
+        
+        # Find contact by normalized phone number or variants
         result = await db.execute(
-            select(Contact).where(Contact.phone_number == phone_number)
+            select(Contact).where(
+                or_(Contact.phone_number == variant for variant in phone_variants),
+                Contact.user_id == user_id
+            )
         )
         contact = result.scalar_one_or_none()
         
         if contact:
+            # Update phone number to normalized format if different
+            if contact.phone_number != normalized_phone:
+                logger.info(f"Updating contact {contact.id} phone number from {contact.phone_number} to {normalized_phone}")
+                contact.phone_number = normalized_phone
+                await db.flush()
+            
             # Update name if provided and different
             if name and contact.name != name:
                 contact.name = name
+                await db.flush()
             return contact
         
-        # Create new contact
+        # Create new contact with normalized phone number
         contact = Contact(
-            phone_number=phone_number,
+            phone_number=normalized_phone,
             name=name,
             status="active",
+            user_id=user_id,
+            source="chat",  # Mark as chat contact (from incoming webhook)
         )
         db.add(contact)
         await db.flush()
         
-        logger.info(f"Created new contact: {phone_number}")
+        logger.info(f"Created new contact: {normalized_phone} for user {user_id} (source: chat)")
         return contact
     
     async def _get_or_create_conversation(
         self,
         db: AsyncSession,
         contact_id: int,
+        user_id: Optional[int] = None,
     ) -> Conversation:
         """Get existing conversation or create new one.
         
         Args:
             db: Database session.
             contact_id: Contact ID.
+            user_id: User ID for multi-tenancy.
         
         Returns:
             Conversation instance.
         """
+        if not user_id:
+            raise ValueError("user_id is required for multi-tenancy")
+        
         result = await db.execute(
             select(Conversation).where(
                 Conversation.contact_id == contact_id,
+                Conversation.user_id == user_id,
                 Conversation.is_active == True,  # noqa: E712
             )
         )
@@ -261,22 +322,25 @@ class MessageProcessor:
         # Create new conversation
         conversation = Conversation(
             contact_id=contact_id,
+            user_id=user_id,
             is_active=True,
         )
         db.add(conversation)
         await db.flush()
         
-        logger.info(f"Created new conversation for contact {contact_id}")
+        logger.info(f"Created new conversation for contact {contact_id}, user {user_id}")
         return conversation
     
     async def _extract_message_content(
         self,
         message: WhatsAppMessage,
+        user_id: Optional[int] = None,
     ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
         """Extract content and media info from message.
         
         Args:
             message: The WhatsApp message.
+            user_id: User ID for media storage tracking.
         
         Returns:
             Tuple of (content, media_url, media_mime_type, media_filename).
@@ -290,21 +354,153 @@ class MessageProcessor:
             content = message.text.body
         
         elif message.type == MessageType.IMAGE.value and message.image:
+            # #region agent log
+            import json
+            import os
+            try:
+                with open('d:\\project\\techpath\\business_wt\\.cursor\\debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "image-receive",
+                        "hypothesisId": "A",
+                        "location": "message_processor.py:_extract_message_content:image",
+                        "message": "Processing incoming image message",
+                        "data": {
+                            "message_id": message.id,
+                            "image_id": message.image.id if message.image else None,
+                            "mime_type": message.image.mime_type if message.image else None,
+                            "has_caption": bool(message.image.caption if message.image else None)
+                        },
+                        "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)
+                    }) + "\n")
+            except: pass
+            # #endregion
+            
             media_mime_type = message.image.mime_type
             content = message.image.caption
             # Get media URL from WhatsApp and download it
             try:
+                # #region agent log
+                try:
+                    with open('d:\\project\\techpath\\business_wt\\.cursor\\debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "image-receive",
+                            "hypothesisId": "B",
+                            "location": "message_processor.py:_extract_message_content:before_get_media_url",
+                            "message": "About to call get_media_url",
+                            "data": {"image_id": message.image.id},
+                            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)
+                        }) + "\n")
+                except: pass
+                # #endregion
+                
                 whatsapp_url = await whatsapp_client.get_media_url(message.image.id)
+                
+                # #region agent log
+                try:
+                    with open('d:\\project\\techpath\\business_wt\\.cursor\\debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "image-receive",
+                            "hypothesisId": "B",
+                            "location": "message_processor.py:_extract_message_content:after_get_media_url",
+                            "message": "Got media URL from WhatsApp",
+                            "data": {
+                                "whatsapp_url": whatsapp_url,
+                                "url_length": len(whatsapp_url) if whatsapp_url else 0,
+                                "has_url": bool(whatsapp_url)
+                            },
+                            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)
+                        }) + "\n")
+                except: pass
+                # #endregion
+                
                 if whatsapp_url:
                     from app.services.media import download_and_store_media
                     from app.config import settings
+                    
+                    # #region agent log
+                    try:
+                        with open('d:\\project\\techpath\\business_wt\\.cursor\\debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "image-receive",
+                                "hypothesisId": "C",
+                                "location": "message_processor.py:_extract_message_content:before_download",
+                                "message": "About to download and store media",
+                                "data": {
+                                    "whatsapp_url": whatsapp_url[:100] + "..." if len(whatsapp_url) > 100 else whatsapp_url,
+                                    "mime_type": media_mime_type or "image/jpeg"
+                                },
+                                "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)
+                            }) + "\n")
+                    except: pass
+                    # #endregion
+                    
                     local_url, _ = await download_and_store_media(
                         whatsapp_url, 
                         media_mime_type or "image/jpeg",
-                        settings.whatsapp_api_token
+                        settings.whatsapp_api_token,
+                        user_id=user_id
                     )
+                    
+                    # #region agent log
+                    try:
+                        with open('d:\\project\\techpath\\business_wt\\.cursor\\debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "image-receive",
+                                "hypothesisId": "C",
+                                "location": "message_processor.py:_extract_message_content:after_download",
+                                "message": "Downloaded and stored media",
+                                "data": {
+                                    "local_url": local_url,
+                                    "has_local_url": bool(local_url)
+                                },
+                                "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)
+                            }) + "\n")
+                    except: pass
+                    # #endregion
+                    
                     media_url = local_url
+                    
+                    # #region agent log
+                    try:
+                        with open('d:\\project\\techpath\\business_wt\\.cursor\\debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "image-receive",
+                                "hypothesisId": "D",
+                                "location": "message_processor.py:_extract_message_content:final",
+                                "message": "Final media_url value",
+                                "data": {
+                                    "media_url": media_url,
+                                    "content": content,
+                                    "media_mime_type": media_mime_type
+                                },
+                                "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)
+                            }) + "\n")
+                    except: pass
+                    # #endregion
             except Exception as e:
+                # #region agent log
+                try:
+                    with open('d:\\project\\techpath\\business_wt\\.cursor\\debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "image-receive",
+                            "hypothesisId": "E",
+                            "location": "message_processor.py:_extract_message_content:error",
+                            "message": "Error getting/downloading image",
+                            "data": {
+                                "error_type": type(e).__name__,
+                                "error_message": str(e)
+                            },
+                            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)
+                        }) + "\n")
+                except: pass
+                # #endregion
                 logger.error(f"Failed to get/download image: {e}")
         
         elif message.type == MessageType.DOCUMENT.value and message.document:
@@ -320,7 +516,8 @@ class MessageProcessor:
                         whatsapp_url,
                         media_mime_type or "application/octet-stream",
                         settings.whatsapp_api_token,
-                        media_filename
+                        user_id=user_id,
+                        original_filename=media_filename
                     )
                     media_url = local_url
             except Exception as e:
@@ -336,7 +533,8 @@ class MessageProcessor:
                     local_url, _ = await download_and_store_media(
                         whatsapp_url,
                         media_mime_type or "audio/ogg",
-                        settings.whatsapp_api_token
+                        settings.whatsapp_api_token,
+                        user_id=user_id
                     )
                     media_url = local_url
             except Exception as e:
@@ -353,7 +551,8 @@ class MessageProcessor:
                     local_url, _ = await download_and_store_media(
                         whatsapp_url,
                         media_mime_type or "video/mp4",
-                        settings.whatsapp_api_token
+                        settings.whatsapp_api_token,
+                        user_id=user_id
                     )
                     media_url = local_url
             except Exception as e:
@@ -369,7 +568,8 @@ class MessageProcessor:
                     local_url, _ = await download_and_store_media(
                         whatsapp_url,
                         media_mime_type or "image/webp",
-                        settings.whatsapp_api_token
+                        settings.whatsapp_api_token,
+                        user_id=user_id
                     )
                     media_url = local_url
             except Exception as e:

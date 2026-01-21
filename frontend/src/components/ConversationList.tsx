@@ -5,7 +5,8 @@ import Image from 'next/image';
 import { useConversationStore, useUIStore, useAuthStore } from '@/hooks/useAppState';
 import { conversationApi } from '@/services/api';
 import { Conversation } from '@/types';
-import { formatConversationTime, truncateText, getInitials, stringToColor, formatPhoneNumber } from '@/utils/formatters';
+import { formatConversationTime, truncateText, getInitials, stringToColor, formatPhoneNumber, isContactOnline } from '@/utils/formatters';
+import { messageApi, getMediaUrl } from '@/services/api';
 
 interface ConversationItemProps {
   conversation: Conversation;
@@ -26,6 +27,13 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   const contactAvatar = conversation.contact_avatar || conversation.contact?.avatar_url;
   const lastMessage = conversation.last_message || 'No messages yet';
   const lastMessageTime = conversation.last_message_at;
+  
+  // Check if contact is online based on recent inbound message activity
+  const isOnline = isContactOnline(
+    lastMessageTime,
+    conversation.last_message_sender_type,
+    5 // 5 minutes threshold
+  );
 
   return (
     <div
@@ -44,21 +52,33 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
         >
           {contactAvatar ? (
             <Image 
-              src={contactAvatar} 
+              src={getMediaUrl(contactAvatar)} 
               alt={contactName}
               width={48}
               height={48}
               className="w-12 h-12 rounded-full object-cover"
               unoptimized
+              onError={(e) => {
+                // Fallback to initials if image fails to load
+                const target = e.target as HTMLImageElement;
+                target.style.display = 'none';
+                const parent = target.parentElement;
+                if (parent) {
+                  const initials = getInitials(contactName);
+                  if (!parent.textContent || parent.textContent.trim() === '') {
+                    parent.textContent = initials;
+                  }
+                }
+              }}
             />
           ) : (
             getInitials(contactName)
           )}
         </div>
         
-        {/* Online indicator */}
-        {conversation.is_active && (
-          <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full" />
+        {/* Online indicator - shows green dot if contact sent a message recently */}
+        {isOnline && (
+          <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full" title="Online" />
         )}
       </div>
 
@@ -172,10 +192,169 @@ const FilterTabs: React.FC<FilterTabsProps> = ({ activeFilter, onChange }) => {
   );
 };
 
+// Send message by phone modal component
+interface SendMessageModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+const SendMessageModal: React.FC<SendMessageModalProps> = ({ isOpen, onClose, onSuccess }) => {
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [contactName, setContactName] = useState('');
+  const [message, setMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { selectConversation } = useConversationStore();
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!phoneNumber.trim() || !message.trim()) {
+      setError('Phone number and message are required');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await messageApi.sendMessageByPhone({
+        phone_number: phoneNumber.trim(),
+        content: message.trim(),
+        contact_name: contactName.trim() || undefined,
+      });
+
+      if (response.success && response.data) {
+        // Find the conversation that was created/used
+        // The backend creates/uses a conversation, so we need to refresh and find it
+        // For now, just close and refresh - the user can find it in the list
+        onSuccess();
+        onClose();
+        setPhoneNumber('');
+        setContactName('');
+        setMessage('');
+      } else {
+        setError(response.error || 'Failed to send message');
+      }
+    } catch (err) {
+      setError('Failed to send message. Please try again.');
+      console.error('Error sending message:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold text-gray-900">Send Message to Phone Number</h2>
+            <button
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+              {error}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit}>
+            <div className="mb-4">
+              <label htmlFor="phone_number" className="block text-sm font-medium text-gray-700 mb-2">
+                Phone Number <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="tel"
+                id="phone_number"
+                value={phoneNumber}
+                onChange={(e) => setPhoneNumber(e.target.value)}
+                placeholder="+1234567890"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                required
+                disabled={loading}
+              />
+            </div>
+
+            <div className="mb-4">
+              <label htmlFor="contact_name" className="block text-sm font-medium text-gray-700 mb-2">
+                Contact Name <span className="text-gray-400 text-xs">(optional)</span>
+              </label>
+              <input
+                type="text"
+                id="contact_name"
+                value={contactName}
+                onChange={(e) => setContactName(e.target.value)}
+                placeholder="John Doe"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                disabled={loading}
+              />
+            </div>
+
+            <div className="mb-6">
+              <label htmlFor="message" className="block text-sm font-medium text-gray-700 mb-2">
+                Message <span className="text-red-500">*</span>
+              </label>
+              <textarea
+                id="message"
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder="Type your message here..."
+                rows={4}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 resize-none"
+                required
+                disabled={loading}
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={loading}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={loading || !phoneNumber.trim() || !message.trim()}
+                className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+              >
+                {loading ? (
+                  <>
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Sending...
+                  </>
+                ) : (
+                  'Send Message'
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // Main ConversationList component
 const ConversationList: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
+  const [isSendModalOpen, setIsSendModalOpen] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
   
   const { 
     conversations, 
@@ -257,8 +436,8 @@ const ConversationList: React.FC = () => {
 
   // Sort by most recent message
   const sortedConversations = [...filteredConversations].sort((a, b) => {
-    const dateA = new Date(a.last_message_at || a.created_at).getTime();
-    const dateB = new Date(b.last_message_at || b.created_at).getTime();
+    const dateA = new Date(a.last_message_at || a.created_at || 0).getTime();
+    const dateB = new Date(b.last_message_at || b.created_at || 0).getTime();
     return dateB - dateA;
   });
 
@@ -273,8 +452,9 @@ const ConversationList: React.FC = () => {
           
           {/* New conversation button */}
           <button 
+            onClick={() => setIsSendModalOpen(true)}
             className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-full transition-colors"
-            title="New conversation"
+            title="Send message to phone number"
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -354,8 +534,8 @@ const ConversationList: React.FC = () => {
         ))}
       </div>
       
-      {/* Refresh button */}
-      <div className="p-3 border-t border-gray-200">
+      {/* Action buttons */}
+      <div className="p-3 border-t border-gray-200 space-y-2">
         <button
           onClick={loadConversations}
           disabled={isLoading}
@@ -371,7 +551,95 @@ const ConversationList: React.FC = () => {
           </svg>
           {isLoading ? 'Refreshing...' : 'Refresh'}
         </button>
+        
+        <button
+          onClick={() => setShowClearConfirm(true)}
+          disabled={isLoading || isClearing || (conversations && conversations.length === 0)}
+          className="w-full py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+          Clear All History
+        </button>
       </div>
+      
+      {/* Clear confirmation modal */}
+      {showClearConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                  <svg className="w-6 h-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <h2 className="text-xl font-semibold text-gray-900">Clear All Conversation History?</h2>
+              </div>
+              
+              <p className="text-gray-700 mb-6">
+                This will permanently delete all your conversations and messages. This action cannot be undone.
+                Your contacts will be preserved.
+              </p>
+              
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowClearConfirm(false)}
+                  disabled={isClearing}
+                  className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={async () => {
+                    setIsClearing(true);
+                    try {
+                      const response = await conversationApi.clearAllConversations();
+                      if (response.success) {
+                        setShowClearConfirm(false);
+                        // Clear conversations from store
+                        setConversations([]);
+                        // Clear selected conversation
+                        selectConversation(null);
+                        // Reload to show empty state
+                        await loadConversations();
+                      } else {
+                        alert(response.error || 'Failed to clear conversations');
+                      }
+                    } catch (err) {
+                      console.error('Error clearing conversations:', err);
+                      alert('Failed to clear conversations. Please try again.');
+                    } finally {
+                      setIsClearing(false);
+                    }
+                  }}
+                  disabled={isClearing}
+                  className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                >
+                  {isClearing ? (
+                    <>
+                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Clearing...
+                    </>
+                  ) : (
+                    'Clear All'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Send message modal */}
+      <SendMessageModal
+        isOpen={isSendModalOpen}
+        onClose={() => setIsSendModalOpen(false)}
+        onSuccess={() => {
+          loadConversations();
+        }}
+      />
     </div>
   );
 };

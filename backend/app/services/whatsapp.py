@@ -1,5 +1,6 @@
 """WhatsApp Cloud API client service."""
 
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
@@ -474,6 +475,62 @@ class WhatsAppClient:
             )
             response.raise_for_status()
             return response.content
+    
+    async def upload_media(
+        self,
+        file_path: str,
+        mime_type: str,
+    ) -> str:
+        """Upload media to WhatsApp and get media ID.
+        
+        Args:
+            file_path: Path to the local file to upload.
+            mime_type: MIME type of the file.
+        
+        Returns:
+            Media ID from WhatsApp.
+        
+        Raises:
+            WhatsAppAPIError: If upload fails.
+        """
+        import aiofiles
+        
+        # Read file
+        async with aiofiles.open(file_path, "rb") as f:
+            file_content = await f.read()
+        
+        # Upload to WhatsApp
+        # WhatsApp requires messaging_product as a form field along with the file
+        files = {"file": (Path(file_path).name, file_content, mime_type)}
+        data = {"messaging_product": "whatsapp"}
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.media_url,
+                headers=headers,
+                files=files,
+                data=data,
+                timeout=60.0,
+            )
+            
+            if response.status_code >= 400:
+                error_message = response.json().get("error", {}).get("message", "Unknown error")
+                logger.error(f"WhatsApp media upload error: {error_message}")
+                raise WhatsAppAPIError(
+                    message=error_message,
+                    status_code=response.status_code,
+                    error_data=response.json(),
+                )
+            
+            response_data = response.json()
+            media_id = response_data.get("id")
+            
+            if not media_id:
+                raise WhatsAppAPIError("No media ID returned from WhatsApp")
+            
+            logger.info(f"Media uploaded successfully. ID: {media_id}")
+            return media_id
 
 
 # Singleton instance

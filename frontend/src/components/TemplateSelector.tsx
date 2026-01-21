@@ -31,7 +31,7 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({
     try {
       const response = await templateApi.getTemplates();
       if (response.success && response.data) {
-        setTemplates(response.data);
+        setTemplates(response.data.items || []);
       }
     } catch (error) {
       console.error('Failed to load templates:', error);
@@ -42,7 +42,7 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({
 
   const filteredTemplates = templates.filter((template) => {
     const matchesSearch = template.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      template.content.toLowerCase().includes(searchQuery.toLowerCase());
+      (template.content || template.body_text || '').toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = selectedCategory === 'all' || template.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });

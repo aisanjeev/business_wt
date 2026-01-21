@@ -24,6 +24,9 @@ venv/
 *.sqlite
 *.sqlite3
 
+# Media files (stored locally, synced to Azure Blob Storage)
+media/
+
 # Logs
 *.log
 logs/
