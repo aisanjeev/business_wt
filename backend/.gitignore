@@ -26,6 +26,10 @@ venv/
 
 # Media files (stored locally, synced to Azure Blob Storage)
 media/
+media/**
+media/**/**
+
+
 
 # Logs
 *.log
